@@ -8,7 +8,6 @@ with the failure paths a person would eventually hit too.
 from __future__ import annotations
 
 import sys
-import time
 from pathlib import Path
 
 import requests
@@ -127,6 +126,43 @@ def run(slow: bool = False) -> Suite:
             local = requests.get(app.url + "/api/hf/local", timeout=10).json()
             s.equal("the five fake weights are listed",
                     len(local["models"]), 5)
+            r = requests.post(app.url + "/api/hf/settings",
+                              json={"token": "hf_secret1234"}, timeout=10)
+            hf = requests.get(app.url + "/api/hf/settings", timeout=10).json()
+            s.check("a saved token is acknowledged by hint only",
+                    r.ok and hf["token_set"] and hf["token_hint"] == "…1234"
+                    and "hf_secret1234" not in str(hf))
+            s.equal("the task list starts empty",
+                    requests.get(app.url + "/api/tasks", timeout=10).json(), [])
+
+            # -- setup, in the connect-to-my-own-ComfyUI mode -------------------
+            r = requests.post(app.url + "/api/setup/start",
+                              json={"mode": "external"}, timeout=10)
+            s.check("setup starts", r.ok)
+            def setup_state():
+                return requests.get(app.url + "/api/setup/state?since=0",
+                                    timeout=10).json()
+            wait_for(lambda: setup_state()["done"] or setup_state()["error"], 30)
+            st = setup_state()
+            s.check("external setup walks every step to done",
+                    st["done"] and not st["error"],
+                    st.get("error") or "")
+            s.check("the steps say what external mode skipped",
+                    "your own ComfyUI" in st["steps"]["nodes"]["detail"]
+                    and st["steps"]["models"]["state"] == "done")
+
+            # -- deleting a weight, and the status noticing ----------------------
+            vae = [m for m in local["models"] if m["folder"] == "vae"][0]
+            r = requests.delete(app.url + "/api/hf/local",
+                                json={"folder": "vae", "name": vae["name"]},
+                                timeout=10)
+            s.check("a weight can be deleted from the Models page", r.ok)
+            st = requests.get(app.url + "/api/status", timeout=10).json()
+            s.check("status immediately reports it missing",
+                    vae["name"] in st["missing_models"] and not st["ready"])
+            r = requests.delete(app.url + "/api/hf/local",
+                                json={"folder": "..", "name": "x"}, timeout=10)
+            s.equal("a path-climbing delete is refused", r.status_code, 400)
 
     # -- ComfyUI down: refuse work, stay standing -----------------------------
     with Workspace() as ws:

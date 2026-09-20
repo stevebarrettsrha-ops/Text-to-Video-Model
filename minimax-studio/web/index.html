@@ -891,7 +891,7 @@ function tile(im) {
     '<div class="over"><div class="cap">' + esc(im.prompt || im.title) + "</div>" +
     '<div class="meta">' + (im.width || "?") + "×" + (im.height || "?") + " · " +
     (im.seconds || "?") + "s" + (im.upscaled ? " · upscaled" : "") +
-    " · seed " + im.seed + "</div></div>";
+    (im.seed == null ? "" : " · seed " + im.seed) + "</div></div>";
   var vid = el.querySelector("video");
   // Without this a tile is a black rectangle until you hover it: the browser
   // fetches metadata but paints no frame. Nudging past zero forces one.
@@ -1026,7 +1026,9 @@ function openLightbox(im) {
   var rows = [["Size", (im.width || "?") + " × " + (im.height || "?")],
               ["Length", (im.seconds || "?") + " s · " + (im.length || "?") +
                " frames"],
-              ["Seed", im.seed], ["Steps", im.steps || "—"],
+              // an RTX pass has no seed of its own — show a dash, not a blank
+              ["Seed", im.seed == null ? "—" : im.seed],
+              ["Steps", im.steps || "—"],
               ["Shift", im.shift || "—"],
               ["Model", short(im.model) || "—"]];
   if (im.lora) rows.push(["Turbo LoRA", short(im.lora)]);

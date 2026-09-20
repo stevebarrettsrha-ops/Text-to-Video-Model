@@ -24,7 +24,9 @@ from pathlib import Path
 import requests
 
 APP_DIR = Path(__file__).resolve().parent
-DATA_DIR = APP_DIR / "data"
+# Config, gallery and finished clips. MINIMAX_STUDIO_DATA moves the lot, which
+# is what lets the tests run against a throwaway folder — as in the sibling apps.
+DATA_DIR = Path(os.environ.get("MINIMAX_STUDIO_DATA") or (APP_DIR / "data"))
 CONFIG_PATH = DATA_DIR / "config.json"
 
 COMFY_REPO = "https://github.com/comfyanonymous/ComfyUI.git"

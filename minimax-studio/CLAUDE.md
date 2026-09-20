@@ -39,6 +39,16 @@ nodes and an upscaler model, and falls back to base size with a note on the clip
 rather than failing. `ModelAttentionBackend` and `MiniMaxH3SigmaShift` are
 skipped if absent. The RTX action is hidden unless the node is loaded.
 
+## Continue this clip
+
+The last frame is captured **in the browser** — the same-origin clip drawn
+onto a canvas, exported as PNG, pushed through the ordinary `/api/upload`
+path. No server-side ffmpeg, no new dependency; keep it that way. The source
+clip's own reference images are carried by name (they are still in
+ComfyUI/input), so `renderRefs` must keep tolerating refs with no local
+thumbnail URL. Seek to `duration − 1/24` before drawing: the exact end of
+some containers decodes to a blank frame.
+
 ## Two bugs worth not reintroducing
 
 - `run_job` must use `built.get("seed")`: the RTX graph has no seed.
@@ -49,15 +59,20 @@ skipped if absent. The RTX action is hidden unless the node is loaded.
 ## Validation gate
 
 ```bash
-python -m py_compile server.py comfy.py bootstrap.py manager.py
-python - <<'PY'
-import re, pathlib
-src = pathlib.Path('web/index.html').read_text()
-pathlib.Path('/tmp/mm.js').write_text('\n'.join(re.findall(r'<script>(.*?)</script>', src, re.S)))
-PY
-node --check /tmp/mm.js
+python tests/run.py            # gate + units + graph + api, ~10 s
+python tests/run.py gate       # just the compile/parse/id checks
 ```
 
-After any big edit, also diff the element ids the JS uses against the ids in the
-markup — removing a panel without removing its wiring is how this app broke
-twice.
+The `gate` module runs what used to be done by hand: py_compile on every
+module, `node --check` on the inline script, the diff of element ids the JS
+uses against the ids in the markup, **and** a scan for interactive controls no
+listener ever touches — removing a panel without removing its wiring is how
+this app broke twice, and shipping controls without wiring them at all is how
+it broke a third time (seconds chips, refs picker, the RTX upscale button).
+
+`graph` and `api` run against `tests/mock_comfy.py`, whose schema is derived
+from the reference workflows in assets/ and which validates prompts the way
+ComfyUI does — so "accepted" there means the real server would take the graph
+too. `units` pins the frame rule and the resolution table to the workflow's
+own numbers, and checks the page's `frames()` against Python's
+`frame_length()` (JS `%` keeps the sign; that pair has drifted once).

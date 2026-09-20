@@ -64,8 +64,12 @@
   .statuspill.off i{background:var(--err);box-shadow:0 0 0 3px rgba(255,90,90,.14)}
 
   /* ---------- prompt bar: the hero ---------- */
+  /* The wrap paints a gradient over content scrolling beneath it; without the
+     pointer-events pair, its transparent padding also swallows their clicks. */
   .barwrap{position:sticky;top:0;z-index:20;padding:18px 26px 12px;
-           background:linear-gradient(180deg,var(--bg) 72%,transparent)}
+           background:linear-gradient(180deg,var(--bg) 72%,transparent);
+           pointer-events:none}
+  .barwrap>*{pointer-events:auto}
   .bar{max-width:1080px;margin:0 auto;background:var(--panel);
        border:1px solid var(--line);border-radius:18px;padding:12px 12px 10px;
        transition:border-color .15s,box-shadow .15s}
@@ -93,8 +97,11 @@
        background:linear-gradient(100deg,var(--accent),var(--accent-2));
        box-shadow:0 10px 26px -14px rgba(224,57,138,.9)}
   .gen:disabled{opacity:.45;box-shadow:none;cursor:not-allowed}
+  /* auto-fill, not auto-fit: with one reference loaded, auto-fit collapses the
+     empty tracks and stretches that card across the full 1080px — a viewport-
+     high sticky bar that buries the feed. auto-fill keeps cards thumbnail-size. */
   .details{max-width:1080px;margin:10px auto 0;display:grid;
-           grid-template-columns:repeat(auto-fit,minmax(168px,1fr));gap:8px}
+           grid-template-columns:repeat(auto-fill,minmax(120px,168px));gap:8px}
 
   /* ---------- feed ---------- */
   .feed{padding:6px 26px 60px;max-width:1440px;margin:0 auto}
@@ -386,6 +393,7 @@
           </div>
         </div>
         <div class="details" id="refsRow" hidden></div>
+      </div>
       <div class="feed">
         <div class="masonry" id="feed"></div>
       </div>
@@ -536,7 +544,8 @@
     <div class="pr" id="lbPrompt"></div>
     <div id="lbMeta"></div>
     <div class="lbacts">
-      <button class="btn go" id="lbReuse">Reuse settings</button>
+      <button class="btn go" id="lbContinue">Continue this clip</button>
+      <button class="btn" id="lbReuse">Reuse settings</button>
       <button class="btn" id="lbVary">New seed</button>
       <button class="btn" id="lbUpscale">RTX upscale ×2</button>
       <button class="btn" id="lbDownload">Download</button>
@@ -667,10 +676,13 @@ function dims() {
   return { w: Math.max(32, Math.round(r[0] * unit / 32) * 32),
            h: Math.max(32, Math.round(r[1] * unit / 32) * 32) };
 }
-// H3 wants (length - 5) divisible by 17, same as the workflow's expression node
+// H3 wants (length - 5) divisible by 17, same as the workflow's expression
+// node. The expression runs under Python's modulo, where (5 - n % 17) % 17 is
+// never negative; JS % keeps the sign, so it needs the +17 dance to round the
+// same way up that the server does.
 function frames(sec, fps) {
   var n = Math.max(5, Math.round(sec * (fps || 24)));
-  return n + (5 - (n % 17)) % 17;
+  return n + (((5 - (n % 17)) % 17) + 17) % 17;
 }
 function syncSize() {
   var d = dims();
@@ -724,8 +736,15 @@ function renderRefs() {
     var el = document.createElement("div");
     el.className = "rescard";
     el.style.position = "relative";
-    el.innerHTML = '<img src="' + esc(r.url) + '" alt="" style="aspect-ratio:1;' +
-      'object-fit:cover;width:100%;display:block;border-radius:10px">' +
+    // A ref carried over from an earlier clip has a name in ComfyUI/input but
+    // no local thumbnail; show the name on a plain tile rather than a broken img.
+    el.innerHTML = (r.url
+      ? '<img src="' + esc(r.url) + '" alt="" style="aspect-ratio:1;' +
+        'object-fit:cover;width:100%;display:block;border-radius:10px">'
+      : '<div style="aspect-ratio:1;display:grid;place-items:center;' +
+        'background:var(--raised);border:1px solid var(--line);border-radius:10px;' +
+        'font-size:11px;color:var(--muted);padding:8px;text-align:center;' +
+        'word-break:break-all">' + esc(r.name) + "</div>") +
       '<div class="cap" style="padding:6px 8px"><span>' + esc(r.name) + "</span></div>";
     var x = mkBtn("×", function () { S.refs.splice(i, 1); renderRefs(); saveDraft(); });
     x.style.cssText = "position:absolute;top:6px;right:6px;padding:2px 8px";
@@ -1021,6 +1040,88 @@ function openLightbox(im) {
   var rtx = S.status && S.status.capabilities && S.status.capabilities.rtx;
   $("lbUpscale").hidden = !rtx;
   $("lightbox").hidden = false;
+}
+/* ========================= continue a clip =========================
+   The next shot starts where this one ended: the clip's last frame is read
+   in the browser — same-origin video onto a canvas, no server-side ffmpeg —
+   uploaded like any reference image, and set as reference 1. The clip's own
+   reference images ride along by name, so the same faces carry over. */
+function captureLastFrame(im) {
+  return new Promise(function (resolve, reject) {
+    var v = document.createElement("video");
+    v.muted = true;
+    v.preload = "auto";
+    var timer = setTimeout(function () {
+      reject(new Error("Could not read the clip — it never finished loading."));
+    }, 15000);
+    v.addEventListener("error", function () {
+      clearTimeout(timer);
+      reject(new Error("This browser could not decode the clip."));
+    });
+    v.addEventListener("loadedmetadata", function () {
+      // The very last instant of some containers decodes to a blank frame;
+      // stepping one frame's width inside the end always paints.
+      v.currentTime = Math.max(0, (v.duration || 0) - 1 / 24);
+    });
+    v.addEventListener("seeked", function () {
+      var c = document.createElement("canvas");
+      c.width = v.videoWidth;
+      c.height = v.videoHeight;
+      if (!c.width || !c.height) {
+        clearTimeout(timer);
+        reject(new Error("The clip decoded to no picture."));
+        return;
+      }
+      c.getContext("2d").drawImage(v, 0, 0);
+      c.toBlob(function (blob) {
+        clearTimeout(timer);
+        if (blob) resolve(blob);
+        else reject(new Error("Could not export the frame."));
+      }, "image/png");
+    });
+    v.src = "/api/clip/" + im.id;
+  });
+}
+async function continueClip(im) {
+  if (!S.status || !S.status.comfy_online) {
+    toast("ComfyUI is not running. Start it from the Engine page.", true);
+    return;
+  }
+  toast("Reading the last frame…");
+  var blob;
+  try { blob = await captureLastFrame(im); }
+  catch (e) { toast(e.message, true); return; }
+  var fd = new FormData();
+  fd.append("file", new File([blob], "continue_" + im.id + ".png",
+                             { type: "image/png" }));
+  var up;
+  try { up = await api("/api/upload", { method: "POST", body: fd }); }
+  catch (e) { toast(e.message, true); return; }
+  S.refs = [{ name: up.name, url: URL.createObjectURL(blob) }];
+  var carried = 0;
+  (im.refs || []).forEach(function (name) {
+    if (S.refs.length < 3 && name !== up.name) {
+      S.refs.push({ name: name, url: "" });   // still in ComfyUI/input, by name
+      carried++;
+    }
+  });
+  if (im.aspect) {
+    S.ratio = im.aspect;
+    $("segRatio").querySelectorAll("button").forEach(function (b) {
+      b.classList.toggle("on", b.dataset.v === S.ratio); });
+  }
+  if (im.megapixels) { S.mp = im.megapixels; $("mp-sl").value = S.mp; }
+  $("description").value = "";
+  $("lightbox").hidden = true;
+  show("create");
+  renderRefs();
+  syncSize();
+  saveDraft();
+  $("description").focus();
+  toast("Last frame loaded as reference 1"
+        + (carried ? ", with the clip's own reference image"
+                     + (carried > 1 ? "s" : "") + " riding along" : "")
+        + ". Describe what happens next.");
 }
 async function rtxUpscale(scale) {
   if (!S.lightbox) return;
@@ -1545,6 +1646,27 @@ function wire() {
       syncSize();
     });
   });
+  $("segSeconds").querySelectorAll("button").forEach(function (b) {
+    b.addEventListener("click", function () {
+      S.seconds = Number(b.dataset.v);
+      $("sec-sl").value = S.seconds;
+      $("segSeconds").querySelectorAll("button").forEach(function (x) {
+        x.classList.toggle("on", x === b); });
+      syncSize();
+    });
+  });
+  // plain on/off toggles: the latent upscale pass and tiled decode
+  ["segUpscale", "segTiled"].forEach(function (id) {
+    $(id).querySelectorAll("button").forEach(function (b) {
+      b.addEventListener("click", function () {
+        $(id).querySelectorAll("button").forEach(function (x) {
+          x.classList.toggle("on", x === b); });
+        saveDraft();
+      });
+    });
+  });
+  $("btnRefs").addEventListener("click", function () { $("refFile").click(); });
+  $("refFile").addEventListener("change", function (e) { addRefs(e.target); });
   $("btnBatch").addEventListener("click", function () {
     S.batch = S.batch === 1 ? 2 : S.batch === 2 ? 4 : 1;
     $("btnBatch").textContent = "×" + S.batch; });
@@ -1570,6 +1692,12 @@ function wire() {
 
   $("mp-sl").addEventListener("input", function (e) {
     S.mp = Number(e.target.value); syncSize(); });
+  $("sec-sl").addEventListener("input", function (e) {
+    S.seconds = Number(e.target.value);
+    $("segSeconds").querySelectorAll("button").forEach(function (b) {
+      b.classList.toggle("on", Number(b.dataset.v) === S.seconds); });
+    syncSize();
+  });
   [["steps-sl", "stepsVal", function (v) { return String(v); }],
    ["shift-sl", "shiftVal", function (v) { return v.toFixed(1); }],
    ["shift2-sl", "shift2Val", function (v) { return v.toFixed(1); }]
@@ -1606,7 +1734,10 @@ function wire() {
   $("lbReuse").addEventListener("click", function () {
     if (S.lightbox) reuse(S.lightbox); });
   $("lbDownload").addEventListener("click", function () {
-    if (S.lightbox) window.open("/api/image/" + S.lightbox.id, "_blank"); });
+    if (S.lightbox) window.open("/api/clip/" + S.lightbox.id, "_blank"); });
+  $("lbUpscale").addEventListener("click", function () { rtxUpscale(2); });
+  $("lbContinue").addEventListener("click", function () {
+    if (S.lightbox) continueClip(S.lightbox); });
   $("lbDelete").addEventListener("click", function () {
     if (S.lightbox) removeImage(S.lightbox); });
   $("lbVary").addEventListener("click", function () {
@@ -1618,6 +1749,7 @@ function wire() {
   });
 
   $("btnRecheck").addEventListener("click", function () { loadDeps(); refreshStatus(); });
+  $("btnPreflight").addEventListener("click", loadPreflight);
   $("btnInstallAll").addEventListener("click", installAllMissing);
   $("btnStartEngine").addEventListener("click", startEngine);
   $("btnReRun").addEventListener("click", openSetup);

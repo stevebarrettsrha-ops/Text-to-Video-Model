@@ -106,6 +106,7 @@ manager.py     Dependency checks and installers, HuggingFace browsing
 comfy.py       Builds the H3 and RTX graphs from ComfyUI's live schema
 web/index.html The interface — one file, no build step
 assets/        The two workflows this was built from
+tests/         python tests/run.py — the suite, against a mock ComfyUI
 data/          config.json, gallery.json, clips/
 ```
 

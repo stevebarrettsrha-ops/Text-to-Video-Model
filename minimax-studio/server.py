@@ -24,7 +24,7 @@ from bootstrap import (APP_DIR, ComfyProcess, Progress, comfy_online,
                        detect_comfy_dirs, load_config, save_config)
 from comfy import ComfyClient, ComfyError
 
-DATA_DIR = APP_DIR / "data"
+DATA_DIR = bootstrap.DATA_DIR          # honours MINIMAX_STUDIO_DATA
 CLIPS_DIR = DATA_DIR / "clips"
 GALLERY_PATH = DATA_DIR / "gallery.json"
 WEB_DIR = APP_DIR / "web"
@@ -129,10 +129,11 @@ def run_job(job_id: str, params: dict) -> None:
         while True:
             time.sleep(1.0)
             with jobs_lock:
-                if jobs[job_id].get("cancelled"):
-                    client.interrupt()
-                    set_state(status="cancelled", stage="Cancelled")
-                    return
+                cancelled = jobs[job_id].get("cancelled")
+            if cancelled:
+                client.interrupt()
+                set_state(status="cancelled", stage="Cancelled")
+                return
             err = client.failed(prompt_id)
             if err:
                 set_state(status="error", error=err, stage="Failed")
@@ -227,6 +228,8 @@ def api_status():
         "detected": detect_comfy_dirs(),
         "precisions": {k: {"label": v["label"], "note": v["note"]}
                        for k, v in bootstrap.PRECISIONS.items()},
+        "turbos": {k: {"label": v["label"], "steps": v["steps"]}
+                   for k, v in bootstrap.TURBO_LORAS.items()},
         "config": {k: cfg.get(k) for k in
                    ("comfy_url", "comfy_dir", "models_dir", "managed",
                     "auto_start_comfy", "torch_index", "precision", "turbo",

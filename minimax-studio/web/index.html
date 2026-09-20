@@ -386,6 +386,7 @@
           </div>
         </div>
         <div class="details" id="refsRow" hidden></div>
+      </div>
       <div class="feed">
         <div class="masonry" id="feed"></div>
       </div>
@@ -667,10 +668,13 @@ function dims() {
   return { w: Math.max(32, Math.round(r[0] * unit / 32) * 32),
            h: Math.max(32, Math.round(r[1] * unit / 32) * 32) };
 }
-// H3 wants (length - 5) divisible by 17, same as the workflow's expression node
+// H3 wants (length - 5) divisible by 17, same as the workflow's expression
+// node. The expression runs under Python's modulo, where (5 - n % 17) % 17 is
+// never negative; JS % keeps the sign, so it needs the +17 dance to round the
+// same way up that the server does.
 function frames(sec, fps) {
   var n = Math.max(5, Math.round(sec * (fps || 24)));
-  return n + (5 - (n % 17)) % 17;
+  return n + (((5 - (n % 17)) % 17) + 17) % 17;
 }
 function syncSize() {
   var d = dims();
@@ -1545,6 +1549,27 @@ function wire() {
       syncSize();
     });
   });
+  $("segSeconds").querySelectorAll("button").forEach(function (b) {
+    b.addEventListener("click", function () {
+      S.seconds = Number(b.dataset.v);
+      $("sec-sl").value = S.seconds;
+      $("segSeconds").querySelectorAll("button").forEach(function (x) {
+        x.classList.toggle("on", x === b); });
+      syncSize();
+    });
+  });
+  // plain on/off toggles: the latent upscale pass and tiled decode
+  ["segUpscale", "segTiled"].forEach(function (id) {
+    $(id).querySelectorAll("button").forEach(function (b) {
+      b.addEventListener("click", function () {
+        $(id).querySelectorAll("button").forEach(function (x) {
+          x.classList.toggle("on", x === b); });
+        saveDraft();
+      });
+    });
+  });
+  $("btnRefs").addEventListener("click", function () { $("refFile").click(); });
+  $("refFile").addEventListener("change", function (e) { addRefs(e.target); });
   $("btnBatch").addEventListener("click", function () {
     S.batch = S.batch === 1 ? 2 : S.batch === 2 ? 4 : 1;
     $("btnBatch").textContent = "×" + S.batch; });
@@ -1570,6 +1595,12 @@ function wire() {
 
   $("mp-sl").addEventListener("input", function (e) {
     S.mp = Number(e.target.value); syncSize(); });
+  $("sec-sl").addEventListener("input", function (e) {
+    S.seconds = Number(e.target.value);
+    $("segSeconds").querySelectorAll("button").forEach(function (b) {
+      b.classList.toggle("on", Number(b.dataset.v) === S.seconds); });
+    syncSize();
+  });
   [["steps-sl", "stepsVal", function (v) { return String(v); }],
    ["shift-sl", "shiftVal", function (v) { return v.toFixed(1); }],
    ["shift2-sl", "shift2Val", function (v) { return v.toFixed(1); }]
@@ -1606,7 +1637,8 @@ function wire() {
   $("lbReuse").addEventListener("click", function () {
     if (S.lightbox) reuse(S.lightbox); });
   $("lbDownload").addEventListener("click", function () {
-    if (S.lightbox) window.open("/api/image/" + S.lightbox.id, "_blank"); });
+    if (S.lightbox) window.open("/api/clip/" + S.lightbox.id, "_blank"); });
+  $("lbUpscale").addEventListener("click", function () { rtxUpscale(2); });
   $("lbDelete").addEventListener("click", function () {
     if (S.lightbox) removeImage(S.lightbox); });
   $("lbVary").addEventListener("click", function () {
@@ -1618,6 +1650,7 @@ function wire() {
   });
 
   $("btnRecheck").addEventListener("click", function () { loadDeps(); refreshStatus(); });
+  $("btnPreflight").addEventListener("click", loadPreflight);
   $("btnInstallAll").addEventListener("click", installAllMissing);
   $("btnStartEngine").addEventListener("click", startEngine);
   $("btnReRun").addEventListener("click", openSetup);

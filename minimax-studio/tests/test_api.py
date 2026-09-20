@@ -1,0 +1,172 @@
+"""The HTTP surface, end to end: a real server.py against a mock ComfyUI.
+
+This is the run-through a person would do by hand — set up, check status,
+make a clip, watch the job, open the gallery, upscale the clip, delete it —
+with the failure paths a person would eventually hit too.
+"""
+
+from __future__ import annotations
+
+import sys
+import time
+from pathlib import Path
+
+import requests
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from harness import (Suite, Workspace, comfy, fake_weights,  # noqa: E402
+                     finish_jobs, free_port, studio, wait_for)
+
+
+def run(slow: bool = False) -> Suite:
+    s = Suite("api")
+    with comfy() as mock, Workspace() as ws:
+        models = ws / "models"
+        fake_weights(models)
+        with studio(mock.url, ws / "data", models) as app:
+            # -- the shell and status ---------------------------------------
+            page = requests.get(app.url + "/", timeout=10)
+            s.check("the page is served",
+                    page.ok and "MiniMax Studio" in page.text)
+            st = requests.get(app.url + "/api/status", timeout=10).json()
+            s.check("status says ready — engine, nodes and weights",
+                    st["ready"] and st["comfy_online"] and st["nodes_ready"])
+            s.equal("no missing models with the set on disk",
+                    st["missing_models"], [])
+            s.check("samplers and schedulers come from the live schema",
+                    "euler" in st.get("samplers", [])
+                    and "simple" in st.get("schedulers", []))
+            s.check("the setup sheet gets its turbo list",
+                    set(st.get("turbos", {})) == {"8step", "4step", "ref2v4"})
+            s.check("precisions carry labels for the setup sheet",
+                    st["precisions"]["int8"]["label"].startswith("INT8"))
+
+            # -- guard rails --------------------------------------------------
+            r = requests.post(app.url + "/api/generate", json={}, timeout=10)
+            s.check("an empty ask is a 400 with advice",
+                    r.status_code == 400 and "reference" in r.json()["error"])
+
+            # -- a clip, end to end -------------------------------------------
+            r = requests.post(app.url + "/api/generate",
+                              json={"prompt": "a man walks to the window",
+                                    "seconds": 6, "megapixels": 0.2,
+                                    "aspect": "16:9", "steps": 8, "seed": 11},
+                              timeout=30)
+            s.check("generate starts a job", r.ok and len(r.json()["jobs"]) == 1)
+            jobs = finish_jobs(app.url)
+            job = jobs[0]
+            s.equal("the job finishes", job["status"], "done")
+            s.check("progress reached 100", job["pct"] == 100)
+            clips = requests.get(app.url + "/api/clips", timeout=10).json()
+            s.equal("one clip in the gallery", len(clips), 1)
+            clip = clips[0]
+            s.check("the gallery entry keeps the whole recipe",
+                    clip["seed"] == 11 and clip["width"] == 608
+                    and clip["height"] == 352 and clip["length"] == 158
+                    and clip["steps"] == 8 and clip["kind"] == "clip")
+            s.check("seconds are the delivered ones, not the asked ones",
+                    abs(clip["seconds"] - 158 / 24) < 0.01)
+            body = requests.get(f"{app.url}/api/clip/{clip['id']}", timeout=10)
+            s.check("the clip streams back as video",
+                    body.ok and body.content[4:8] == b"ftyp"
+                    and "video/mp4" in body.headers.get("Content-Type", ""))
+
+            # -- the RTX pass on that clip --------------------------------------
+            r = requests.post(f"{app.url}/api/upscale/{clip['id']}",
+                              json={"scale": 2}, timeout=30)
+            s.check("upscale starts from the gallery", r.ok)
+            finish_jobs(app.url)
+            clips = requests.get(app.url + "/api/clips", timeout=10).json()
+            s.equal("the upscale lands as a second clip", len(clips), 2)
+            up = [c for c in clips if c["kind"] == "rtx"][0]
+            s.check("the gallery shows source size times the multiplier, "
+                    "not None x None",
+                    up["width"] == 1216 and up["height"] == 704)
+            s.check("the RTX job carries no seed", up["seed"] is None)
+            s.check("audio length and fps ride along",
+                    up["fps"] == clip["fps"] and up["seconds"] == clip["seconds"])
+            r = requests.post(app.url + "/api/upscale/nonsense", json={},
+                              timeout=10)
+            s.equal("upscaling a clip that does not exist is a 404",
+                    r.status_code, 404)
+
+            # -- delete ----------------------------------------------------------
+            gone = requests.delete(f"{app.url}/api/clip/{clip['id']}",
+                                   timeout=10)
+            s.check("delete says ok", gone.ok)
+            clips = requests.get(app.url + "/api/clips", timeout=10).json()
+            s.check("the clip is out of the gallery",
+                    clip["id"] not in [c["id"] for c in clips])
+            s.check("its file is off the disk",
+                    not list((ws / "data" / "clips").glob(clip["file"])))
+            s.equal("fetching it now is a 404",
+                    requests.get(f"{app.url}/api/clip/{clip['id']}",
+                                 timeout=10).status_code, 404)
+
+            # -- the rest of the surface -----------------------------------------
+            pf = requests.get(app.url + "/api/preflight", timeout=30).json()
+            s.check("preflight measures and gives a verdict",
+                    pf["verdict"] in ("ok", "tight", "hard")
+                    and pf["download"] > 0)
+            r = requests.post(app.url + "/api/config",
+                              json={"torch_index": "https://example/whl"},
+                              timeout=10)
+            s.check("config saves", r.ok)
+            deps = requests.get(app.url + "/api/deps", timeout=60).json()
+            s.equal("the saved torch index comes back",
+                    deps["torch_index"], "https://example/whl")
+            s.check("the dependency report covers the engine",
+                    any(i["id"] == "engine" and i["state"] == "ok"
+                        for i in deps["items"]))
+            hf = requests.get(app.url + "/api/hf/settings", timeout=10).json()
+            s.check("hf settings list the curated sets",
+                    set(hf["curated"]["sets"]) == {"int8", "fp8", "nvfp4"})
+            s.check("no token yet, and no token leaked",
+                    hf["token_set"] is False and "hf_token" not in hf)
+            local = requests.get(app.url + "/api/hf/local", timeout=10).json()
+            s.equal("the five fake weights are listed",
+                    len(local["models"]), 5)
+
+    # -- ComfyUI down: refuse work, stay standing -----------------------------
+    with Workspace() as ws:
+        dead = f"http://127.0.0.1:{free_port()}"
+        with studio(dead, ws / "data") as app:
+            st = requests.get(app.url + "/api/status", timeout=10).json()
+            s.check("status admits the engine is offline",
+                    not st["comfy_online"] and not st["ready"])
+            r = requests.post(app.url + "/api/generate",
+                              json={"prompt": "x"}, timeout=10)
+            s.check("generate is a 503 that names the Engine page",
+                    r.status_code == 503 and "Engine" in r.json()["error"])
+
+    # -- a render that dies: the person is told why ----------------------------
+    with comfy(MOCK_FAIL_AFTER="1") as mock, Workspace() as ws:
+        models = ws / "models"
+        fake_weights(models)
+        with studio(mock.url, ws / "data", models) as app:
+            requests.post(app.url + "/api/generate",
+                          json={"prompt": "doomed"}, timeout=30)
+            jobs = finish_jobs(app.url)
+            s.equal("the job reports the error", jobs[0]["status"], "error")
+            s.check("out-of-memory advice points at the fix",
+                    "megapixels" in jobs[0]["error"]
+                    and "low-VRAM" in jobs[0]["error"])
+            s.equal("nothing lands in the gallery",
+                    requests.get(app.url + "/api/clips", timeout=10).json(), [])
+
+    # -- cancelling a run ---------------------------------------------------------
+    with comfy(delay=8.0) as mock, Workspace() as ws:
+        models = ws / "models"
+        fake_weights(models)
+        with studio(mock.url, ws / "data", models) as app:
+            r = requests.post(app.url + "/api/generate",
+                              json={"prompt": "slow"}, timeout=30)
+            job_id = r.json()["jobs"][0]
+            wait_for(lambda: requests.get(app.url + "/api/jobs",
+                                          timeout=10).json(), 10)
+            requests.post(f"{app.url}/api/jobs/{job_id}/cancel", timeout=10)
+            jobs = finish_jobs(app.url, timeout=30)
+            s.equal("a cancelled job says cancelled",
+                    jobs[0]["status"], "cancelled")
+    return s

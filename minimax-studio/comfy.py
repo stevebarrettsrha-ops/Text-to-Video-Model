@@ -407,8 +407,8 @@ class ComfyClient:
             return latent_ref, ("The A/V latent split nodes are missing, so the "
                                 "clip was rendered at base size.")
         g["40"] = self._node(sep, {
-            "latent": {"names": ["latent", "samples"], "value": latent_ref,
-                       "required": True}})
+            "latent": {"names": ["av_latent", "latent", "samples"],
+                       "value": latent_ref, "required": True}})
         g["41"] = self._node(UPSCALER, {
             "model": {"names": ["model_name", "upscaler", "ckpt_name", "model"],
                       "value": models[0], "required": True},

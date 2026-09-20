@@ -49,15 +49,20 @@ skipped if absent. The RTX action is hidden unless the node is loaded.
 ## Validation gate
 
 ```bash
-python -m py_compile server.py comfy.py bootstrap.py manager.py
-python - <<'PY'
-import re, pathlib
-src = pathlib.Path('web/index.html').read_text()
-pathlib.Path('/tmp/mm.js').write_text('\n'.join(re.findall(r'<script>(.*?)</script>', src, re.S)))
-PY
-node --check /tmp/mm.js
+python tests/run.py            # gate + units + graph + api, ~10 s
+python tests/run.py gate       # just the compile/parse/id checks
 ```
 
-After any big edit, also diff the element ids the JS uses against the ids in the
-markup — removing a panel without removing its wiring is how this app broke
-twice.
+The `gate` module runs what used to be done by hand: py_compile on every
+module, `node --check` on the inline script, the diff of element ids the JS
+uses against the ids in the markup, **and** a scan for interactive controls no
+listener ever touches — removing a panel without removing its wiring is how
+this app broke twice, and shipping controls without wiring them at all is how
+it broke a third time (seconds chips, refs picker, the RTX upscale button).
+
+`graph` and `api` run against `tests/mock_comfy.py`, whose schema is derived
+from the reference workflows in assets/ and which validates prompts the way
+ComfyUI does — so "accepted" there means the real server would take the graph
+too. `units` pins the frame rule and the resolution table to the workflow's
+own numbers, and checks the page's `frames()` against Python's
+`frame_length()` (JS `%` keeps the sign; that pair has drifted once).

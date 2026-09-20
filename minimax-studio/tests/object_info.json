@@ -1,0 +1,628 @@
+{
+ "UNETLoader": {
+  "input": {
+   "required": {
+    "unet_name": [
+     [
+      "h3/minimax_h3_ref2va_pruned_int8_convrot.safetensors"
+     ],
+     {}
+    ],
+    "weight_dtype": [
+     [
+      "default",
+      "fp8_e4m3fn",
+      "fp8_e4m3fn_fast",
+      "fp8_e5m2"
+     ],
+     {}
+    ]
+   }
+  },
+  "output": [
+   "MODEL"
+  ]
+ },
+ "CLIPLoader": {
+  "input": {
+   "required": {
+    "clip_name": [
+     [
+      "qwen3vl_32b_minimax_h3_int8_convrot.safetensors"
+     ],
+     {}
+    ],
+    "type": [
+     [
+      "stable_diffusion",
+      "sd3",
+      "flux",
+      "minimax"
+     ],
+     {}
+    ]
+   },
+   "optional": {
+    "device": [
+     [
+      "default",
+      "cpu"
+     ],
+     {}
+    ]
+   }
+  },
+  "output": [
+   "CLIP"
+  ]
+ },
+ "VAELoader": {
+  "input": {
+   "required": {
+    "vae_name": [
+     [
+      "minimax_h3_video_vae_fp16.safetensors",
+      "minimax_h3_audio_vae_fp32.safetensors"
+     ],
+     {}
+    ]
+   }
+  },
+  "output": [
+   "VAE"
+  ]
+ },
+ "LoraLoaderModelOnly": {
+  "input": {
+   "required": {
+    "model": [
+     "MODEL"
+    ],
+    "lora_name": [
+     [
+      "minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors"
+     ],
+     {}
+    ],
+    "strength_model": [
+     "FLOAT",
+     {
+      "default": 1.0,
+      "min": -100.0,
+      "max": 100.0
+     }
+    ]
+   }
+  },
+  "output": [
+   "MODEL"
+  ]
+ },
+ "ModelAttentionBackend": {
+  "input": {
+   "required": {
+    "model": [
+     "MODEL"
+    ],
+    "backend": [
+     [
+      "comfy kitchen attention",
+      "pytorch attention",
+      "sage attention"
+     ],
+     {}
+    ]
+   }
+  },
+  "output": [
+   "MODEL"
+  ]
+ },
+ "MiniMaxH3SigmaShift": {
+  "input": {
+   "required": {
+    "model": [
+     "MODEL"
+    ],
+    "shift": [
+     "FLOAT",
+     {
+      "default": 6.0
+     }
+    ],
+    "shift_2": [
+     "FLOAT",
+     {
+      "default": 3.0
+     }
+    ]
+   }
+  },
+  "output": [
+   "MODEL"
+  ]
+ },
+ "MiniMaxH3ReferenceToVideo": {
+  "input": {
+   "required": {
+    "clip": [
+     "CLIP"
+    ],
+    "vae": [
+     "VAE"
+    ],
+    "audio_vae": [
+     "VAE"
+    ],
+    "prompt": [
+     "STRING",
+     {
+      "multiline": true,
+      "default": ""
+     }
+    ],
+    "width": [
+     "INT",
+     {
+      "default": 1344,
+      "min": 32,
+      "max": 8192
+     }
+    ],
+    "height": [
+     "INT",
+     {
+      "default": 768,
+      "min": 32,
+      "max": 8192
+     }
+    ],
+    "length": [
+     "INT",
+     {
+      "default": 124,
+      "min": 5,
+      "max": 1000
+     }
+    ]
+   },
+   "optional": {
+    "ref_images.ref_image_0": [
+     "IMAGE"
+    ],
+    "ref_images.ref_image_1": [
+     "IMAGE"
+    ],
+    "ref_images.ref_image_2": [
+     "IMAGE"
+    ],
+    "ref_videos.ref_video_0": [
+     "IMAGE"
+    ],
+    "ref_audios.ref_audio_0": [
+     "AUDIO"
+    ]
+   }
+  },
+  "output": [
+   "CONDITIONING",
+   "LATENT"
+  ]
+ },
+ "ConditioningZeroOut": {
+  "input": {
+   "required": {
+    "conditioning": [
+     "CONDITIONING"
+    ]
+   }
+  },
+  "output": [
+   "CONDITIONING"
+  ]
+ },
+ "KSampler": {
+  "input": {
+   "required": {
+    "model": [
+     "MODEL"
+    ],
+    "seed": [
+     "INT",
+     {
+      "default": 0,
+      "min": 0,
+      "max": 18446744073709551615,
+      "control_after_generate": true
+     }
+    ],
+    "steps": [
+     "INT",
+     {
+      "default": 20,
+      "min": 1,
+      "max": 10000
+     }
+    ],
+    "cfg": [
+     "FLOAT",
+     {
+      "default": 8.0,
+      "min": 0.0,
+      "max": 100.0
+     }
+    ],
+    "sampler_name": [
+     [
+      "euler",
+      "euler_ancestral",
+      "dpmpp_2m",
+      "ddim",
+      "uni_pc"
+     ],
+     {}
+    ],
+    "scheduler": [
+     [
+      "simple",
+      "normal",
+      "karras",
+      "sgm_uniform",
+      "beta"
+     ],
+     {}
+    ],
+    "positive": [
+     "CONDITIONING"
+    ],
+    "negative": [
+     "CONDITIONING"
+    ],
+    "latent_image": [
+     "LATENT"
+    ],
+    "denoise": [
+     "FLOAT",
+     {
+      "default": 1.0,
+      "min": 0.0,
+      "max": 1.0
+     }
+    ]
+   }
+  },
+  "output": [
+   "LATENT"
+  ]
+ },
+ "VAEDecode": {
+  "input": {
+   "required": {
+    "samples": [
+     "LATENT"
+    ],
+    "vae": [
+     "VAE"
+    ]
+   }
+  },
+  "output": [
+   "IMAGE"
+  ]
+ },
+ "VAEDecodeTiled": {
+  "input": {
+   "required": {
+    "samples": [
+     "LATENT"
+    ],
+    "vae": [
+     "VAE"
+    ],
+    "tile_size": [
+     "INT",
+     {
+      "default": 512,
+      "min": 64,
+      "max": 4096
+     }
+    ],
+    "overlap": [
+     "INT",
+     {
+      "default": 64,
+      "min": 0,
+      "max": 4096
+     }
+    ],
+    "temporal_size": [
+     "INT",
+     {
+      "default": 64,
+      "min": 8,
+      "max": 4096
+     }
+    ],
+    "temporal_overlap": [
+     "INT",
+     {
+      "default": 8,
+      "min": 4,
+      "max": 4096
+     }
+    ]
+   }
+  },
+  "output": [
+   "IMAGE"
+  ]
+ },
+ "VAEDecodeAudio": {
+  "input": {
+   "required": {
+    "samples": [
+     "LATENT"
+    ],
+    "vae": [
+     "VAE"
+    ]
+   }
+  },
+  "output": [
+   "AUDIO"
+  ]
+ },
+ "CreateVideo": {
+  "input": {
+   "required": {
+    "images": [
+     "IMAGE"
+    ],
+    "fps": [
+     "FLOAT",
+     {
+      "default": 30.0,
+      "min": 1.0,
+      "max": 120.0
+     }
+    ]
+   },
+   "optional": {
+    "audio": [
+     "AUDIO"
+    ]
+   }
+  },
+  "output": [
+   "VIDEO"
+  ]
+ },
+ "SaveVideo": {
+  "input": {
+   "required": {
+    "video": [
+     "VIDEO"
+    ],
+    "filename_prefix": [
+     "STRING",
+     {
+      "default": "video/ComfyUI"
+     }
+    ],
+    "format": [
+     [
+      "auto",
+      "mp4",
+      "webm"
+     ],
+     {}
+    ],
+    "codec": [
+     [
+      "auto",
+      "h264",
+      "vp9"
+     ],
+     {}
+    ]
+   }
+  },
+  "output": []
+ },
+ "LoadImage": {
+  "input": {
+   "required": {
+    "image": [
+     [
+      "example.png"
+     ],
+     {
+      "image_upload": true
+     }
+    ]
+   }
+  },
+  "output": [
+   "IMAGE",
+   "MASK"
+  ]
+ },
+ "LoadVideo": {
+  "input": {
+   "required": {
+    "file": [
+     [
+      "example.mp4"
+     ],
+     {
+      "video_upload": true
+     }
+    ]
+   }
+  },
+  "output": [
+   "VIDEO"
+  ]
+ },
+ "GetVideoComponents": {
+  "input": {
+   "required": {
+    "video": [
+     "VIDEO"
+    ]
+   }
+  },
+  "output": [
+   "IMAGE",
+   "AUDIO",
+   "FLOAT"
+  ]
+ },
+ "RTXVideoSuperResolution": {
+  "input": {
+   "required": {
+    "images": [
+     "IMAGE"
+    ],
+    "resize_type": [
+     [
+      "scale by multiplier",
+      "scale to resolution"
+     ],
+     {}
+    ],
+    "scale": [
+     "INT",
+     {
+      "default": 2,
+      "min": 1,
+      "max": 4
+     }
+    ],
+    "quality": [
+     [
+      "ULTRA",
+      "HIGH",
+      "MEDIUM"
+     ],
+     {}
+    ]
+   }
+  },
+  "output": [
+   "IMAGE"
+  ]
+ },
+ "MinimaxH3LatentUpscaler3D": {
+  "input": {
+   "required": {
+    "model_name": [
+     [
+      "minimax_h3_latent_upscaler_3d_bf16.safetensors"
+     ],
+     {}
+    ],
+    "latent": [
+     "LATENT"
+    ],
+    "resize_type": [
+     [
+      "megapixels",
+      "scale"
+     ],
+     {}
+    ],
+    "megapixels": [
+     "FLOAT",
+     {
+      "default": 0.6,
+      "min": 0.1,
+      "max": 4.0
+     }
+    ],
+    "multiple_of": [
+     "INT",
+     {
+      "default": 32,
+      "min": 1,
+      "max": 256
+     }
+    ],
+    "use_tiling": [
+     "BOOLEAN",
+     {
+      "default": true
+     }
+    ],
+    "device": [
+     [
+      "cuda",
+      "cpu"
+     ],
+     {}
+    ]
+   }
+  },
+  "output": [
+   "LATENT"
+  ]
+ },
+ "LTXVSeparateAVLatent": {
+  "input": {
+   "required": {
+    "av_latent": [
+     "LATENT"
+    ]
+   }
+  },
+  "output": [
+   "LATENT",
+   "LATENT"
+  ]
+ },
+ "LTXVConcatAVLatent": {
+  "input": {
+   "required": {
+    "video_latent": [
+     "LATENT"
+    ],
+    "audio_latent": [
+     "LATENT"
+    ]
+   }
+  },
+  "output": [
+   "LATENT"
+  ]
+ },
+ "ModelPreviewOverrideKJ": {
+  "input": {
+   "required": {
+    "model": [
+     "MODEL"
+    ],
+    "max_resolution": [
+     "INT",
+     {
+      "default": 1024
+     }
+    ],
+    "throttle_ms": [
+     "INT",
+     {
+      "default": 80
+     }
+    ],
+    "vae_name": [
+     [
+      "taeh3.safetensors"
+     ],
+     {}
+    ]
+   }
+  },
+  "output": [
+   "MODEL"
+  ]
+ }
+}

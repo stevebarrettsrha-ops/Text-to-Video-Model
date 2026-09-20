@@ -85,6 +85,22 @@ and muxed by `CreateVideo`.
 
 ---
 
+## The Board — the whole cut on one strip
+
+The **Board** page is the multi-shot workflow made visual: one card per shot,
+each carrying its prompt, its length and its rendered clip. By default every
+shot is **chained** — generated with the previous shot's last frame as
+reference 1 — so faces and places carry through the whole sequence. The tag
+on each card turns chaining off; drag cards to reorder; size, steps and the
+rest come from the generator's Settings.
+
+**Render remaining** walks the strip in order and renders every written shot
+that has no clip yet (in order, because a chained shot needs the clip before
+it). **Play the cut** plays the rendered shots back to back in the player.
+The board lives in `data/board.json`, next to the gallery, so it is still
+there tomorrow. Final assembly — music, trims, transitions — is editor work;
+every clip downloads from its lightbox.
+
 ## Continuing a clip
 
 Open any finished clip and press **Continue this clip**. The clip's last frame

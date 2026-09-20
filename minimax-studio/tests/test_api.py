@@ -135,6 +135,31 @@ def run(slow: bool = False) -> Suite:
             s.equal("the task list starts empty",
                     requests.get(app.url + "/api/tasks", timeout=10).json(), [])
 
+            # -- the board ---------------------------------------------------
+            s.equal("the board starts empty",
+                    requests.get(app.url + "/api/board", timeout=10).json(), [])
+            shots = [{"id": "s1", "prompt": "the window", "seconds": 6,
+                      "chain": True, "clip": "abc123"},
+                     {"id": "s2", "prompt": "he turns", "seconds": 4,
+                      "chain": False, "clip": "",
+                      "junk": "dropped", "seed": 999}]
+            r = requests.post(app.url + "/api/board", json=shots, timeout=10)
+            s.check("the board saves", r.ok and r.json()["shots"] == 2)
+            back = requests.get(app.url + "/api/board", timeout=10).json()
+            s.check("the board round-trips in order",
+                    [b["id"] for b in back] == ["s1", "s2"]
+                    and back[0]["clip"] == "abc123"
+                    and back[1]["chain"] is False)
+            s.check("foreign keys are stripped on the way in",
+                    all(set(b) == {"id", "prompt", "seconds", "chain", "clip"}
+                        for b in back))
+            r = requests.post(app.url + "/api/board",
+                              json={"nonsense": 1}, timeout=10)
+            s.equal("a board that is not a list is a 400", r.status_code, 400)
+            s.check("a bad save does not clobber the stored board",
+                    len(requests.get(app.url + "/api/board",
+                                     timeout=10).json()) == 2)
+
             # -- setup, in the connect-to-my-own-ComfyUI mode -------------------
             r = requests.post(app.url + "/api/setup/start",
                               json={"mode": "external"}, timeout=10)

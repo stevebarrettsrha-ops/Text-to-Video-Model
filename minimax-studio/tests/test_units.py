@@ -115,10 +115,74 @@ def run(slow: bool = False) -> Suite:
                                               "vae", "../../etc/passwd"),
                  RuntimeError, "not allowed")
 
+    # -- setup progress: the machinery behind the bars ----------------------
+    prog = bootstrap.Progress()
+    snap = prog.snapshot()
+    s.check("steps travel as a list, in run order — jsonify sorts dict keys",
+            isinstance(snap["steps"], list)
+            and [x["key"] for x in snap["steps"]]
+            == [k for k, _ in bootstrap.Progress.STEPS])
+    prog.begin("models")
+    prog.track("models", 250, "over")
+    s.equal("track clamps a runaway percentage",
+            prog.snapshot()["steps"][4]["pct"], 100)
+    prog.track("models", None, "no number yet")
+    s.check("track(None) means an indeterminate bar, not 0%",
+            prog.snapshot()["steps"][4]["pct"] is None)
+    prog.track("models", 42.25)
+    prog.finish("models")
+    s.check("finishing a step clears its bar",
+            prog.snapshot()["steps"][4]["pct"] is None
+            and prog.snapshot()["steps"][4]["state"] == "done")
+
+    s.check("pip raw progress lines parse",
+            bootstrap.PIP_RAW.match("Progress 512 of 2048").groups()
+            == ("512", "2048"))
+    s.check("pip download lines yield the wheel's name",
+            bootstrap.PIP_GET.match(
+                "  Downloading https://x/torch-2.4.0-cp312.whl (2.4 GB)")
+            .group(1).endswith("torch-2.4.0-cp312.whl"))
+    s.check("git progress lines parse whichever phase",
+            bootstrap.GIT_PHASE.search(
+                "Receiving objects:  67% (1024/1522), 88.1 MiB").groups()
+            == ("Receiving objects", "67"))
+    got = []
+    fake = bootstrap.Progress()
+    fake.begin("nodes")
+    cb = bootstrap._git_pct(fake, "nodes", "KJNodes", base=50, span=50)
+    cb("Receiving objects", 100)
+    got = fake.snapshot()["steps"][2]["pct"]
+    s.check("a git slice stays inside its base..base+span window",
+            50 <= got <= 100, f"pct {got}")
+    s.equal("transfer lines read like a person would say them",
+            bootstrap.fmt_transfer(1.5e9, 3e9, 12e6, 125),
+            "1.50 GB of 3.00 GB · 12.0 MB/s · 2m 5s left")
+
     # -- preflight says something, whatever the machine ---------------------
     pf = bootstrap.preflight(cfg)
     s.check("preflight reports the download and peak sizes",
             pf["download"] > 50e9 and pf["peak"] > 30e9,
             f"download {pf['download']/1e9:.0f} GB, peak {pf['peak']/1e9:.0f} GB")
     s.check("preflight gives a verdict", pf["verdict"] in ("ok", "tight", "hard"))
+
+    # -- the verdict is calibrated against the real 4060 run -----------------
+    GB = 1e9
+    peak, dl = 33e9, 54e9
+    v, notes = bootstrap.assess(8 * GB, 32 * GB, 500 * GB, dl, peak)
+    s.check("8 GB VRAM + 32 GB RAM — the proven 4060 case — is tight, "
+            "never hard", v == "tight", f"got {v!r}")
+    s.check("its notes say workable and point at the RTX route",
+            any("proven workable" in n for n in notes)
+            and any("RTX upscale" in n for n in notes))
+    v, _ = bootstrap.assess(4 * GB, 32 * GB, 500 * GB, dl, peak)
+    s.equal("4 GB of VRAM is genuinely hard", v, "hard")
+    v, _ = bootstrap.assess(8 * GB, 16 * GB, 500 * GB, dl, peak)
+    s.equal("16 GB of RAM against a 33 GB peak is hard", v, "hard")
+    v, _ = bootstrap.assess(24 * GB, 64 * GB, 30 * GB, dl, peak)
+    s.equal("a big card cannot outrun a full disk", v, "hard")
+    v, _ = bootstrap.assess(24 * GB, 64 * GB, 500 * GB, dl, peak)
+    s.equal("24 GB VRAM and room everywhere is ok", v, "ok")
+    v, notes = bootstrap.assess(0, 32 * GB, 500 * GB, dl, peak)
+    s.check("no GPU reading is not a verdict, just a note",
+            any("install pytorch" in n.lower() for n in notes))
     return s

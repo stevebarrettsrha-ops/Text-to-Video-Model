@@ -31,6 +31,9 @@ WEB_DIR = APP_DIR / "web"
 PORT = int(os.environ.get("MINIMAX_STUDIO_PORT", "7804"))
 
 app = Flask(__name__, static_folder=None)
+# jsonify alphabetises dict keys by default, which scrambled the setup steps
+# on the one screen where order is the whole point.
+app.json.sort_keys = False
 
 cfg = load_config()
 progress = Progress()

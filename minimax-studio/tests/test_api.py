@@ -15,7 +15,7 @@ import requests
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from harness import (Suite, Workspace, comfy, fake_weights,  # noqa: E402
-                     finish_jobs, free_port, studio, wait_for)
+                     finish_jobs, free_port, hub, studio, wait_for)
 
 
 def run(slow: bool = False) -> Suite:
@@ -167,14 +167,22 @@ def run(slow: bool = False) -> Suite:
             def setup_state():
                 return requests.get(app.url + "/api/setup/state?since=0",
                                     timeout=10).json()
+            def step(st, key):
+                return [x for x in st["steps"] if x["key"] == key][0]
             wait_for(lambda: setup_state()["done"] or setup_state()["error"], 30)
             st = setup_state()
             s.check("external setup walks every step to done",
                     st["done"] and not st["error"],
                     st.get("error") or "")
+            s.check("the steps arrive as a list, in run order — not "
+                    "alphabetised by jsonify",
+                    isinstance(st["steps"], list)
+                    and [x["key"] for x in st["steps"]]
+                    == ["python", "comfyui", "nodes", "deps", "models",
+                        "launch"])
             s.check("the steps say what external mode skipped",
-                    "your own ComfyUI" in st["steps"]["nodes"]["detail"]
-                    and st["steps"]["models"]["state"] == "done")
+                    "your own ComfyUI" in step(st, "nodes")["detail"]
+                    and step(st, "models")["state"] == "done")
 
             # -- deleting a weight, and the status noticing ----------------------
             vae = [m for m in local["models"] if m["folder"] == "vae"][0]
@@ -188,6 +196,47 @@ def run(slow: bool = False) -> Suite:
             r = requests.delete(app.url + "/api/hf/local",
                                 json={"folder": "..", "name": "x"}, timeout=10)
             s.equal("a path-climbing delete is refused", r.status_code, 400)
+
+    # -- setup that actually downloads: the bar must move ----------------------
+    with comfy() as mock, hub() as hf_hub, Workspace() as ws:
+        models = ws / "models"
+        models.mkdir(parents=True)
+        with studio(mock.url, ws / "data", models,
+                    hf_endpoint=hf_hub.url) as app:
+            requests.post(hf_hub.url + "/mock/mode", json={"slow": 0.25},
+                          timeout=10)
+            r = requests.post(app.url + "/api/setup/start",
+                              json={"mode": "external"}, timeout=10)
+            s.check("setup with missing weights starts", r.ok)
+            seen_pct, seen_detail = [], ""
+            def sample():
+                nonlocal seen_detail
+                st = requests.get(app.url + "/api/setup/state?since=0",
+                                  timeout=10).json()
+                m = [x for x in st["steps"] if x["key"] == "models"][0]
+                if isinstance(m.get("pct"), (int, float)):
+                    seen_pct.append(m["pct"])
+                    seen_detail = m["detail"] or seen_detail
+                return st["done"] or st["error"]
+            wait_for(sample, timeout=60, step=0.1)
+            st = requests.get(app.url + "/api/setup/state?since=0",
+                              timeout=10).json()
+            s.check("the download setup finishes",
+                    st["done"] and not st["error"], st.get("error") or "")
+            s.check("the models bar showed real percentages on the way",
+                    any(0 < p < 100 for p in seen_pct),
+                    f"saw {sorted(set(int(p) for p in seen_pct))[:12]}")
+            s.check("the bar covers the whole set and only moves forward",
+                    seen_pct == sorted(seen_pct) and seen_pct[-1:] != [0],
+                    f"{len(seen_pct)} samples")
+            s.check("the detail line names the file and the byte counts",
+                    "of" in seen_detail and "(" in seen_detail, seen_detail[:80])
+            got = {p.name for p in models.rglob("*.safetensors")}
+            s.check("all five weights landed on disk", len(got) == 5,
+                    str(sorted(got)))
+            st_now = requests.get(app.url + "/api/status", timeout=10).json()
+            s.check("the app is ready once they land",
+                    st_now["ready"] and st_now["missing_models"] == [])
 
     # -- ComfyUI down: refuse work, stay standing -----------------------------
     with Workspace() as ws:

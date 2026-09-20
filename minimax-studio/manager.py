@@ -209,11 +209,12 @@ def dependencies(cfg: dict, client=None) -> list[dict]:
                 d = _json.loads(out.splitlines()[-1])
                 if d["cuda"]:
                     gb = d["vram"] / 1e9
-                    state = "ok" if gb >= 20 else "warn"
+                    # 8 GB is the proven floor (RTX 4060, this app's defaults)
+                    state = "ok" if gb >= 7 else "warn"
                     detail = f"torch {d['v']} — {d['dev']}, {gb:.0f} GB"
-                    if gb < 20:
-                        detail += " — under what H3 wants resident; see the "\
-                                  "preflight on this page."
+                    if gb < 7:
+                        detail += " — under the 8 GB this app is tuned for; "\
+                                  "see the preflight on this page."
                     items.append({"id": "torch", "label": "PyTorch", "state": state,
                                   "detail": detail, "action": "reinstall"})
                 else:
@@ -420,9 +421,7 @@ def hf_download(cfg: dict, repo: str, path: str, folder: str = "") -> Task:
 
         def on_prog(got, total, speed, eta):
             task.set(pct=(got / total * 100) if total else 0,
-                     detail=f"{got/1e9:.2f} / {total/1e9:.2f} GB · "
-                            f"{speed/1e6:.1f} MB/s · "
-                            f"{int(eta//60)}m {int(eta%60)}s left")
+                     detail=bootstrap.fmt_transfer(got, total, speed, eta))
 
         bootstrap.download_file(cfg, repo, path, dest, on_prog,
                                 lambda: task.cancel)

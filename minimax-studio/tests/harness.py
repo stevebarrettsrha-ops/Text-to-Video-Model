@@ -138,6 +138,14 @@ def comfy(delay: float = 1.0, **env) -> Server:
                   env={"MOCK_DELAY": str(delay), **env})
 
 
+def hub() -> Server:
+    """A stand-in huggingface.co, for the download paths."""
+    port = free_port()
+    return Server([sys.executable, str(Path(__file__).resolve().parent
+                                       / "mock_hf.py"), str(port)],
+                  port, "/mock/log")
+
+
 def fake_weights(models_dir: Path) -> None:
     """Drop the five weight files where missing_models() looks for them."""
     for folder, names in WEIGHTS.items():

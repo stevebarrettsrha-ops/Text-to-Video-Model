@@ -1,0 +1,1704 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>MiniMax Studio</title>
+<style>
+  :root{
+    --bg:#08080a; --chrome:#101014; --panel:#14141a; --raised:#1a1a21;
+    --line:#222229; --hair:#1a1a20;
+    --text:#f2f2f3; --muted:#7e7e88; --dim:#5a5a64;
+    --accent:#7c4dff; --accent-2:#e0398a; --pink:#ff2d7a;
+    --obj:#d4a017; --txt:#3ddc97;
+    --ok:#3ddc97; --warn:#ffb020; --err:#ff5a5a;
+    --rail:194px;
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%}
+  body{margin:0;background:var(--bg);color:var(--text);overflow:hidden;
+    font-family:Inter,"Segoe UI",system-ui,-apple-system,"Helvetica Neue",Arial,sans-serif;
+    font-size:14px;line-height:1.5;-webkit-font-smoothing:antialiased}
+  button,input,textarea,select{font:inherit;color:inherit}
+  button{cursor:pointer;border:0;background:none}
+  :focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:8px}
+  ::-webkit-scrollbar{width:10px;height:10px}
+  ::-webkit-scrollbar-thumb{background:#26262e;border-radius:8px;border:3px solid var(--bg)}
+  ::-webkit-scrollbar-track{background:transparent}
+  svg{stroke:currentColor;fill:none;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
+  [hidden]{display:none!important}
+  input[type=text],input[type=password],select,textarea{background:#16161c;
+    border:1px solid var(--line);border-radius:9px;padding:9px 11px;font-size:13px;
+    color:var(--text);width:100%}
+  input:focus,select:focus,textarea:focus{outline:none;border-color:#3a3a46}
+  textarea{resize:vertical}
+  .flab{font-size:11px;color:var(--muted);margin-bottom:5px;display:block}
+
+  .app{display:grid;grid-template-columns:var(--rail) 1fr;height:100vh}
+  .rail{border-right:1px solid var(--hair);padding:16px 12px;display:flex;
+        flex-direction:column;gap:3px;background:var(--chrome)}
+  .main{overflow-y:auto;position:relative}
+
+  /* rail */
+  .brand{display:flex;align-items:center;gap:9px;padding:6px 10px 18px;
+         font-weight:700;font-size:14px;letter-spacing:.15em}
+  .brand .dot{width:9px;height:9px;border-radius:50%;
+              background:linear-gradient(135deg,var(--accent),var(--accent-2))}
+  .nav{display:flex;align-items:center;gap:11px;padding:9px 12px;border-radius:10px;
+       color:var(--muted);font-weight:500;width:100%;text-align:left}
+  .nav:hover{background:var(--panel);color:var(--text)}
+  .nav[aria-current="page"]{background:var(--raised);color:var(--text)}
+  .nav svg{width:17px;height:17px;flex:none}
+  .nav .tag{margin-left:auto;font-size:10px;padding:2px 6px;border-radius:6px;
+            background:var(--pink);color:#fff;font-weight:600}
+  .rail .spacer{flex:1}
+  .who{display:flex;align-items:center;gap:9px;padding:9px 12px;color:var(--muted);
+       font-size:13px}
+  .who .av{width:18px;height:18px;border-radius:50%;
+           background:linear-gradient(135deg,var(--accent-2),var(--accent))}
+  .statuspill{display:flex;align-items:center;gap:8px;padding:8px 12px;font-size:12px;
+              color:var(--muted);border-radius:10px;width:100%;text-align:left}
+  .statuspill:hover{background:var(--panel)}
+  .statuspill i{width:7px;height:7px;border-radius:50%;background:var(--dim);flex:none}
+  .statuspill.on i{background:var(--ok);box-shadow:0 0 0 3px rgba(61,220,151,.16)}
+  .statuspill.off i{background:var(--err);box-shadow:0 0 0 3px rgba(255,90,90,.14)}
+
+  /* ---------- prompt bar: the hero ---------- */
+  .barwrap{position:sticky;top:0;z-index:20;padding:18px 26px 12px;
+           background:linear-gradient(180deg,var(--bg) 72%,transparent)}
+  .bar{max-width:1080px;margin:0 auto;background:var(--panel);
+       border:1px solid var(--line);border-radius:18px;padding:12px 12px 10px;
+       transition:border-color .15s,box-shadow .15s}
+  .bar:focus-within{border-color:#3d3552;
+       box-shadow:0 0 0 1px rgba(124,77,255,.35),0 24px 60px -34px rgba(124,77,255,.8)}
+  .bar textarea{background:transparent;border:0;padding:6px 8px 2px;font-size:16px;
+       line-height:1.5;min-height:52px;max-height:200px;overflow-y:auto}
+  .bar textarea::placeholder{color:var(--dim)}
+  .barrow{display:flex;align-items:center;gap:7px;padding:6px 4px 0;flex-wrap:wrap}
+  .barrow .grow{flex:1}
+  .pill{display:inline-flex;align-items:center;gap:7px;padding:7px 12px;border-radius:999px;
+        background:var(--raised);border:1px solid var(--line);font-size:12.5px;
+        color:var(--muted);white-space:nowrap}
+  .pill:hover{border-color:#34343e;color:var(--text)}
+  .pill.on{border-color:rgba(124,77,255,.6);background:rgba(124,77,255,.14);color:#cdbcff}
+  .pill svg{width:14px;height:14px}
+  .pill select{background:transparent;border:0;padding:0;width:auto;font-size:12.5px;
+               max-width:150px}
+  .chips{display:inline-flex;background:var(--raised);border:1px solid var(--line);
+         border-radius:999px;padding:3px}
+  .chips button{padding:5px 11px;border-radius:999px;font-size:12px;color:var(--muted)}
+  .chips button.on{background:#2e2e38;color:var(--text)}
+  .gen{padding:9px 20px;border-radius:999px;font-weight:600;font-size:13.5px;
+       display:inline-flex;align-items:center;gap:8px;color:#fff;
+       background:linear-gradient(100deg,var(--accent),var(--accent-2));
+       box-shadow:0 10px 26px -14px rgba(224,57,138,.9)}
+  .gen:disabled{opacity:.45;box-shadow:none;cursor:not-allowed}
+  .details{max-width:1080px;margin:10px auto 0;display:grid;
+           grid-template-columns:repeat(auto-fit,minmax(168px,1fr));gap:8px}
+
+  /* ---------- feed ---------- */
+  .feed{padding:6px 26px 60px;max-width:1440px;margin:0 auto}
+  .feedhead{display:flex;align-items:center;gap:10px;margin:14px 0 12px;
+            font-size:13px;color:var(--muted)}
+  .feedhead .grow{flex:1}
+  .masonry{columns:4;column-gap:12px}
+  @media (max-width:1500px){.masonry{columns:3}}
+  @media (max-width:1050px){.masonry{columns:2}}
+  @media (max-width:640px){.masonry{columns:1}}
+  .tile{break-inside:avoid;margin-bottom:12px;position:relative;border-radius:14px;
+        overflow:hidden;background:var(--panel);border:1px solid var(--hair);
+        display:block;width:100%}
+  .tile img{width:100%;display:block}
+  .tile .over{position:absolute;inset:auto 0 0 0;padding:32px 12px 11px;
+        background:linear-gradient(180deg,transparent,rgba(0,0,0,.82));
+        opacity:0;transition:opacity .16s;text-align:left}
+  .tile:hover .over,.tile:focus-within .over{opacity:1}
+  .tile .over .cap{font-size:12px;color:#e9e9ec;display:-webkit-box;
+        -webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+  .tile .over .meta{font-size:10.5px;color:#a9a9b4;margin-top:3px}
+  .tile .acts{position:absolute;top:8px;right:8px;display:flex;gap:4px;opacity:0;
+        transition:opacity .16s}
+  .tile:hover .acts{opacity:1}
+  .tile .acts button{width:28px;height:28px;border-radius:8px;background:rgba(8,8,10,.72);
+        border:1px solid rgba(255,255,255,.1);color:#fff;display:grid;place-items:center}
+  .tile .acts button:hover{background:rgba(8,8,10,.92)}
+  .tile .acts svg{width:14px;height:14px}
+  .skel{break-inside:avoid;margin-bottom:12px;border-radius:14px;overflow:hidden;
+        background:var(--panel);border:1px solid var(--hair);padding:14px}
+  .skel .ph{width:100%;border-radius:10px;background:
+        linear-gradient(100deg,#17171e 30%,#22222c 50%,#17171e 70%);
+        background-size:220% 100%;animation:sweep 1.5s linear infinite}
+  @keyframes sweep{to{background-position:-220% 0}}
+  .skel .lbl{font-size:12px;color:var(--muted);margin-top:10px;display:flex;
+        justify-content:space-between;gap:8px}
+  .bar4{height:3px;border-radius:2px;background:#23232b;margin-top:8px;overflow:hidden}
+  .bar4 i{display:block;height:100%;border-radius:2px;transition:width .4s ease;
+        background:linear-gradient(90deg,var(--accent),var(--accent-2))}
+  .skel.bad{border-color:rgba(255,90,90,.4)}
+  .skel.bad .lbl{color:#ff9a9a}
+  .empty{padding:60px 20px;text-align:center;color:var(--dim);font-size:13px}
+  .empty b{display:block;color:var(--muted);font-size:14px;margin-bottom:6px}
+
+  /* ---------- home ---------- */
+  .home{max-width:760px;margin:0 auto;padding:70px 26px 40px}
+  h1.big{font-size:32px;line-height:1.15;letter-spacing:-.02em;margin:0 0 20px;
+         text-align:center}
+  .sugg{display:flex;flex-wrap:wrap;gap:7px;justify-content:center;margin-top:14px}
+  .sugg button{padding:7px 13px;border-radius:999px;border:1px solid var(--line);
+        background:var(--panel);font-size:12.5px;color:var(--muted)}
+  .sugg button:hover{border-color:var(--accent);color:#cdbcff}
+
+  /* ---------- popovers ---------- */
+  .pop{position:fixed;z-index:40;background:var(--panel);border:1px solid var(--line);
+       border-radius:16px;padding:16px;width:min(420px,92vw);
+       box-shadow:0 30px 70px -30px #000}
+  .pop h3{margin:0 0 12px;font-size:13.5px;font-weight:600}
+  .orow{display:flex;align-items:center;gap:12px;padding:9px 11px;background:var(--raised);
+        border-radius:10px;margin-bottom:7px;font-size:12.5px;flex-wrap:wrap}
+  .orow .lab{color:#c6c6cf;white-space:nowrap}
+  .orow .ctl{margin-left:auto;display:flex;align-items:center;gap:9px}
+  .orow select{width:auto;min-width:112px;padding:5px 8px;font-size:12px;background:#212129}
+  .orow input[type=text]{width:120px;background:transparent;border:0;text-align:right}
+  .slider{display:flex;align-items:center;gap:9px;min-width:170px}
+  .slider input[type=range]{flex:1;-webkit-appearance:none;appearance:none;height:20px;
+        background:repeating-linear-gradient(90deg,#30303a 0 1px,transparent 1px 11px)
+        center/100% 11px no-repeat}
+  .slider input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:5px;
+        height:17px;border-radius:3px;background:var(--pink);cursor:pointer}
+  .slider input[type=range]::-moz-range-thumb{width:5px;height:17px;border:0;
+        border-radius:3px;background:var(--pink);cursor:pointer}
+  .slider .v{font-size:12px;color:#c6c6cf;width:60px;text-align:right;
+        font-variant-numeric:tabular-nums}
+
+  /* ---------- lightbox ---------- */
+  .lightbox{position:fixed;inset:0;background:#06060a;z-index:80;display:flex;
+            align-items:stretch}
+  .lightbox .stage{flex:1;display:grid;place-items:center;padding:34px;min-width:0;
+            min-height:0}
+  /* contain scales small images up to fill the stage as well as shrinking big ones */
+  .lightbox .stage video{width:100%;height:100%;object-fit:contain;
+            border-radius:12px;display:block;background:#000}
+  .lightbox .side{width:330px;flex:none;border-left:1px solid var(--hair);
+            background:var(--chrome);padding:22px;overflow-y:auto}
+  .lightbox .side h3{margin:0 0 4px;font-size:15px}
+  .lightbox .side .pr{font-size:13px;color:#d6d6db;line-height:1.6;margin:10px 0 16px}
+  .kv{display:flex;justify-content:space-between;gap:10px;padding:7px 0;
+      border-bottom:1px solid var(--hair);font-size:12px;color:var(--muted)}
+  .kv b{color:var(--text);font-weight:500;text-align:right;word-break:break-all}
+  .lbacts{display:flex;gap:7px;flex-wrap:wrap;margin-top:16px}
+
+  .loraline{display:flex;align-items:center;gap:9px;padding:8px 10px;
+       background:var(--raised);border:1px solid var(--line);border-radius:10px;
+       margin-bottom:6px;font-size:12.5px}
+  .loraline.on{border-color:var(--accent)}
+  .loraline .nm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;
+       white-space:nowrap;cursor:pointer}
+  .loraline input[type=range]{width:96px;accent-color:var(--pink)}
+  .loraline .trig{flex:none;font-size:11px;color:var(--pink);
+       background:rgba(255,45,122,.12);border-radius:5px;padding:2px 7px}
+  .loraline .st{width:32px;text-align:right;font-size:11.5px;color:var(--muted);
+       font-variant-numeric:tabular-nums}
+  .hit{display:flex;gap:10px;padding:9px;border-radius:11px;background:var(--raised);
+       border:1px solid var(--line);margin-bottom:6px;align-items:center}
+  .hit .n{min-width:0;flex:1}
+  .hit .n b{display:block;font-size:12.5px;font-weight:500;white-space:nowrap;
+       overflow:hidden;text-overflow:ellipsis}
+  .hit .n span{font-size:11px;color:var(--dim)}
+
+  /* ---------- pages: models + engine ---------- */
+  .page{padding:26px 26px 80px;max-width:980px;margin:0 auto}
+  .panel{background:var(--panel);border:1px solid var(--hair);border-radius:14px;
+         padding:16px;margin-bottom:12px}
+  .panel h2{margin:0 0 4px;font-size:15px}
+  .panel p.sub{margin:0 0 14px;color:var(--muted);font-size:13px;line-height:1.6}
+  .frow{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:10px}
+  .frow input[type=text],.frow input[type=password]{flex:1;min-width:190px}
+  .frow select{width:auto;min-width:170px}
+  .flist{display:flex;flex-direction:column;gap:6px}
+  .fitem{display:flex;align-items:center;gap:12px;padding:11px 13px;background:var(--raised);
+         border-radius:11px}
+  .fitem .n{font-size:13px;min-width:0}
+  .fitem .n b{font-weight:500;display:block;word-break:break-all}
+  .fitem .n span{font-size:11.5px;color:var(--dim)}
+  .fitem .right{margin-left:auto;display:flex;align-items:center;gap:8px;flex:none}
+  .state{font-size:11px;padding:3px 9px;border-radius:999px;border:1px solid var(--line);
+         color:var(--muted);white-space:nowrap}
+  .state.ok{color:#8ff0c4;border-color:rgba(61,220,151,.36);background:rgba(61,220,151,.09)}
+  .state.missing{color:#ffa8a8;border-color:rgba(255,90,90,.36);background:rgba(255,90,90,.08)}
+  .state.warn{color:#ffd693;border-color:rgba(255,176,32,.36);background:rgba(255,176,32,.08)}
+  .setrow{display:flex;align-items:center;gap:12px;padding:12px 14px;background:var(--raised);
+          border:1px solid var(--line);border-radius:12px;margin-bottom:8px;flex-wrap:wrap}
+  .setrow.on{border-color:var(--accent)}
+  .setrow .n b{display:block;font-size:13px}
+  .setrow .n span{font-size:11.5px;color:var(--dim)}
+  .setrow .right{margin-left:auto;display:flex;gap:8px;align-items:center}
+  .log{background:#050507;border:1px solid var(--hair);border-radius:11px;padding:12px;
+       font-family:ui-monospace,"Cascadia Mono",Menlo,Consolas,monospace;font-size:11.5px;
+       color:#93939d;height:200px;overflow-y:auto;white-space:pre-wrap;line-height:1.55}
+  .btn{padding:9px 15px;border-radius:10px;background:#232329;font-size:12.5px;
+       font-weight:500}
+  .btn:hover{background:#2c2c34}
+  .btn.go{background:linear-gradient(100deg,var(--accent),var(--accent-2));color:#fff}
+  .btn.thin{padding:6px 12px;font-size:12px}
+  .btn:disabled{opacity:.45;cursor:not-allowed}
+  .note{font-size:12px;color:var(--dim);margin:10px 0 0;line-height:1.55}
+  .bad-text{color:#ff9a9a}
+
+  /* ---------- sheets ---------- */
+  .veil{position:fixed;inset:0;background:rgba(4,4,6,.86);backdrop-filter:blur(7px);
+        display:grid;place-items:center;padding:24px;z-index:60}
+  .sheet{width:min(720px,100%);max-height:88vh;overflow-y:auto;background:var(--panel);
+         border:1px solid var(--line);border-radius:18px;padding:26px 28px}
+  .sheet h1{margin:0 0 6px;font-size:20px}
+  .sheet p.lede{margin:0 0 18px;color:var(--muted);line-height:1.6}
+  .steps{display:flex;flex-direction:column;gap:2px;margin:16px 0}
+  .step{display:flex;gap:12px;align-items:flex-start;padding:10px 12px;border-radius:11px}
+  .step .mark{width:20px;height:20px;border-radius:50%;border:1.5px solid #34343c;flex:none;
+              display:grid;place-items:center;font-size:11px;color:var(--dim);margin-top:1px}
+  .step.running{background:var(--raised)}
+  .step.running .mark{border-color:var(--accent);color:#cdbcff}
+  .step.done .mark{background:var(--ok);border-color:var(--ok);color:#06210f}
+  .step.error .mark{background:var(--err);border-color:var(--err);color:#2a0606}
+  .step .lbl{font-size:13.5px;font-weight:500}
+  .step .dt{font-size:12px;color:var(--dim);margin-top:2px;word-break:break-word}
+  .step.error .dt{color:#ff9a9a}
+  .pick{display:flex;flex-direction:column;gap:8px;margin:14px 0}
+  .pick label{display:flex;gap:10px;align-items:flex-start;padding:12px 14px;
+        border-radius:12px;border:1px solid var(--line);background:var(--raised);
+        cursor:pointer}
+  .pick label:has(input:checked){border-color:var(--accent);background:rgba(124,77,255,.09)}
+  .pick input{margin-top:3px;accent-color:var(--accent);width:auto}
+  .pick b{display:block;font-size:13.5px}
+  .pick em{font-style:normal;font-size:12.5px;color:var(--muted);display:block;
+        line-height:1.55}
+  .rowbtn{display:flex;gap:10px;flex-wrap:wrap;margin-top:16px}
+  .switch{display:flex;align-items:center;justify-content:space-between;gap:10px;
+        background:var(--raised);border:1px solid var(--line);border-radius:10px;
+        padding:9px 11px;font-size:12.5px}
+  .switch input{accent-color:var(--accent);width:16px;height:16px}
+  .grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:10px}
+  .toast{position:fixed;left:50%;bottom:28px;transform:translateX(-50%);z-index:90;
+        background:#1b1b22;border:1px solid var(--line);border-radius:11px;
+        padding:11px 16px;font-size:13px;box-shadow:0 18px 40px -20px #000;
+        max-width:min(560px,92vw)}
+  .toast.bad{border-color:rgba(255,90,90,.5);color:#ffb3b3}
+
+  @media (max-width:760px){
+    .app{grid-template-columns:1fr;grid-template-rows:auto 1fr}
+    .rail{flex-direction:row;overflow-x:auto;padding:8px;border-right:0;
+          border-bottom:1px solid var(--hair)}
+    .rail .spacer,.who,.brand,.statuspill{display:none}
+    .nav{width:auto;white-space:nowrap}
+    .barwrap,.feed,.page{padding-left:14px;padding-right:14px}
+    .lightbox{flex-direction:column}
+    .lightbox .side{width:auto;border-left:0;border-top:1px solid var(--hair);
+          max-height:45vh}
+  }
+  @media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+</style>
+</head>
+<body>
+<div class="app">
+  <!-- ===================== rail ===================== -->
+  <aside class="rail">
+    <div class="brand"><i class="dot"></i>MINIMAX H3</div>
+    <button class="nav" data-view="home" aria-current="page">
+      <svg viewBox="0 0 24 24"><path d="M4 10.5 12 4l8 6.5V20a1 1 0 0 1-1 1h-4v-6H9v6H5a1 1 0 0 1-1-1z"/></svg>Home</button>
+    <button class="nav" data-view="create">
+      <svg viewBox="0 0 24 24"><path d="m12 3 2 5.5L19.5 10 14 12l-2 5.5L10 12 4.5 10 10 8.5z"/></svg>Generate</button>
+    <button class="nav" data-view="library">
+      <svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>Library</button>
+    <button class="nav" data-view="models">
+      <svg viewBox="0 0 24 24"><path d="M12 3 3 8l9 5 9-5zM3 16l9 5 9-5M3 12l9 5 9-5"/></svg>Models
+      <span class="tag" id="modelsTag" hidden>!</span></button>
+    <button class="nav" data-view="engine">
+      <svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="3"/><path d="M9 9h6v6H9zM2 10h2M2 14h2M20 10h2M20 14h2M10 2v2M14 2v2M10 20v2M14 20v2"/></svg>Engine
+      <span class="tag" id="engineTag" hidden>!</span></button>
+    <div class="spacer"></div>
+    <button class="statuspill" id="enginePill"><i></i><span>Checking engine…</span></button>
+    <button class="nav" id="navSettings">
+      <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-2.7 1.1V21a2 2 0 1 1-4 0a1.6 1.6 0 0 0-2.8-1.1l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1A1.6 1.6 0 0 0 3 14a2 2 0 1 1 0-4a1.6 1.6 0 0 0 1.7-2.7l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1A1.6 1.6 0 0 0 10 3a2 2 0 1 1 4 0a1.6 1.6 0 0 0 2.7 1.1l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1A1.6 1.6 0 0 0 21 10a2 2 0 1 1 0 4a1.6 1.6 0 0 0-1.6 1z"/></svg>Settings</button>
+    <div class="who"><span class="av"></span>Local engine</div>
+  </aside>
+
+  <!-- ===================== main ===================== -->
+  <main class="main" id="mainCol">
+
+    <!-- home -->
+    <section data-page="home">
+      <div class="home">
+        <h1 class="big">What happens in the shot?</h1>
+        <div class="bar">
+          <textarea id="homePrompt" rows="1" spellcheck="false"
+            placeholder="A man walks to the window and looks out at the rain, then turns to camera and speaks…"></textarea>
+          <div class="barrow">
+            <button class="pill" id="homeOpen" title="Open in the generator">
+              <svg viewBox="0 0 24 24"><path d="M4 7h16M4 12h10M4 17h7"/></svg>Full controls</button>
+            <span class="grow"></span>
+            <button class="gen" id="homeRun">
+              <svg viewBox="0 0 24 24" style="width:15px;height:15px"><path d="m12 3 2 5.5L19.5 10 14 12l-2 5.5L10 12 4.5 10 10 8.5z"/></svg>
+              Generate</button>
+          </div>
+        </div>
+        <div class="sugg" id="suggestions"></div>
+      </div>
+      <div class="feed">
+        <div class="feedhead">Recent<span class="grow"></span>
+          <button class="btn thin" data-view="library">See all</button></div>
+        <div class="masonry" id="homeGrid"></div>
+      </div>
+    </section>
+
+    <!-- generate -->
+    <section data-page="create" hidden>
+      <div class="barwrap">
+        <div class="bar">
+          <textarea id="description" rows="1" spellcheck="false"
+            placeholder="Describe your image…"></textarea>
+          <div class="barrow">
+            <div class="chips" id="segRatio">
+              <button class="on" data-v="16:9">16:9</button>
+              <button data-v="9:16">9:16</button>
+              <button data-v="1:1">1:1</button>
+              <button data-v="4:3">4:3</button>
+            </div>
+            <div class="chips" id="segSeconds">
+              <button data-v="2">2s</button>
+              <button data-v="4">4s</button>
+              <button class="on" data-v="6">6s</button>
+              <button data-v="8">8s</button>
+            </div>
+            <button class="pill" id="btnRefs">
+              <svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/></svg>
+              <span id="refsLabel">References</span></button>
+            <input type="file" id="refFile" accept="image/*" multiple hidden>
+            <button class="pill" id="btnSettings">
+              <svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16"/><circle cx="9" cy="6" r="2"/><circle cx="15" cy="12" r="2"/><circle cx="8" cy="18" r="2"/></svg>
+              Settings</button>
+            <span class="grow"></span>
+            <span class="pill" id="modelPill">
+              <svg viewBox="0 0 24 24"><path d="M12 3 3 8l9 5 9-5zM3 16l9 5 9-5"/></svg>
+              <select id="unet-sel"><option value="">auto</option></select></span>
+            <button class="pill" id="btnBatch" title="Clips per press">×1</button>
+            <button class="gen" id="btnGenerate">
+              <svg viewBox="0 0 24 24" style="width:15px;height:15px"><path d="m12 3 2 5.5L19.5 10 14 12l-2 5.5L10 12 4.5 10 10 8.5z"/></svg>
+              <span id="genLabel">Generate</span></button>
+          </div>
+        </div>
+        <div class="details" id="refsRow" hidden></div>
+      <div class="feed">
+        <div class="masonry" id="feed"></div>
+      </div>
+    </section>
+
+    <!-- library -->
+    <section data-page="library" hidden>
+      <div class="feed">
+        <div class="feedhead" style="margin-top:22px">Library<span class="grow"></span>
+          <input type="text" id="libSearch" style="max-width:250px"
+                 placeholder="Search your images"></div>
+        <div class="masonry" id="libGrid"></div>
+      </div>
+    </section>
+
+    <!-- models -->
+    <section class="page" data-page="models" hidden>
+      <div class="panel">
+        <h2>Weights</h2>
+        <p class="sub">A MiniMax H3 set is five files: the ref2va model, the
+          Qwen3-VL-32B text encoder, a video VAE, an audio VAE, and the turbo
+          LoRA. The sizes shown are the real ones — check them against the
+          preflight on the Engine page before starting a download.</p>
+        <div id="setsList"></div>
+        <p class="note">H3 is under the MiniMax community licence. If a download
+          is refused, accept it on the model page and add a token below.</p>
+      </div>
+      <div class="panel">
+        <h2>HuggingFace</h2>
+        <div class="frow">
+          <input type="password" id="hf-token" placeholder="Access token (for gated repos)">
+          <input type="text" id="hf-endpoint" placeholder="https://huggingface.co">
+          <button class="btn" id="btnSaveHf">Save</button>
+        </div>
+        <p class="note" id="hf-token-note"></p>
+      </div>
+      <div class="panel">
+        <h2>Browse a repo</h2>
+        <div class="frow">
+          <input type="text" id="hf-repo" placeholder="Comfy-Org/MiniMax-H3">
+          <select id="hf-folder"></select>
+          <button class="btn go" id="btnBrowse">Browse</button>
+        </div>
+        <div class="flist" id="repo-list"></div>
+      </div>
+      <div class="panel">
+        <h2>Downloads</h2>
+        <div class="flist" id="dl-list"></div>
+      </div>
+      <div class="panel">
+        <h2>On this machine</h2>
+        <p class="sub" id="models-dir-note"></p>
+        <div class="flist" id="local-list"></div>
+      </div>
+    </section>
+
+    <!-- engine -->
+    <section class="page" data-page="engine" hidden>
+      <div class="panel">
+        <h2>Everything MiniMax Studio needs</h2>
+        <p class="sub">Install anything marked missing. It all runs from here — no
+          command prompt, no manual downloads.</p>
+        <div class="flist" id="dep-list"></div>
+        <div class="rowbtn">
+          <button class="btn" id="btnRecheck">Recheck</button>
+          <button class="btn go" id="btnInstallAll">Install everything missing</button>
+          <button class="btn" id="btnStartEngine">Start ComfyUI</button>
+          <button class="btn" id="btnReRun">Run setup again</button>
+        </div>
+      </div>
+      <div class="panel">
+        <h2>Preflight</h2>
+        <p class="sub">What this machine can do with the weights you have
+          chosen. Measured, not guessed.</p>
+        <div id="preflight"></div>
+        <div class="rowbtn"><button class="btn" id="btnPreflight">Measure again</button></div>
+      </div>
+      <div class="panel">
+        <h2>PyTorch build</h2>
+        <p class="sub">Chosen from your hardware. Change it if PyTorch will not install
+          or your GPU is being ignored.</p>
+        <div class="frow">
+          <select id="torch-index">
+            <option value="">Automatic</option>
+            <option value="https://download.pytorch.org/whl/cu128">NVIDIA — CUDA 12.8</option>
+            <option value="https://download.pytorch.org/whl/cu124">NVIDIA — CUDA 12.4</option>
+            <option value="https://download.pytorch.org/whl/cu121">NVIDIA — CUDA 12.1</option>
+            <option value="https://download.pytorch.org/whl/rocm6.2">AMD — ROCm 6.2</option>
+            <option value="https://download.pytorch.org/whl/cpu">CPU only</option>
+          </select>
+          <button class="btn" id="btnSaveTorch">Save</button>
+        </div>
+      </div>
+      <div class="panel">
+        <h2>Activity</h2>
+        <p class="sub" id="task-title">Nothing running.</p>
+        <div class="log" id="task-log"></div>
+        <div class="rowbtn"><button class="btn" id="btnCancelTask" hidden>Stop</button></div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<!-- settings popover -->
+<div class="pop" id="settingsPop" hidden>
+  <h3>Generation</h3>
+  <div class="orow"><span class="lab">Size</span><div class="ctl"><div class="slider">
+    <input type="range" id="mp-sl" min="0.1" max="0.8" step="0.1" value="0.2">
+    <span class="v" id="sizeVal">608×352</span></div></div></div>
+  <div class="orow"><span class="lab">Length</span><div class="ctl"><div class="slider">
+    <input type="range" id="sec-sl" min="1" max="12" step="0.5" value="6">
+    <span class="v" id="lenVal">6.0s</span></div></div></div>
+  <div class="orow"><span class="lab">Steps</span><div class="ctl"><div class="slider">
+    <input type="range" id="steps-sl" min="2" max="40" step="1" value="8">
+    <span class="v" id="stepsVal">8</span></div></div></div>
+  <div class="orow"><span class="lab">Shift</span><div class="ctl"><div class="slider">
+    <input type="range" id="shift-sl" min="1" max="12" step="0.5" value="6">
+    <span class="v" id="shiftVal">6.0</span></div></div></div>
+  <div class="orow"><span class="lab">Shift 2</span><div class="ctl"><div class="slider">
+    <input type="range" id="shift2-sl" min="1" max="8" step="0.5" value="3">
+    <span class="v" id="shift2Val">3.0</span></div></div></div>
+  <div class="orow"><span class="lab">Sampler</span><div class="ctl">
+    <select id="sampler-sel"><option value="euler">euler</option></select>
+    <select id="sched-sel"><option value="simple">simple</option></select></div></div>
+  <div class="orow"><span class="lab">Attention</span><div class="ctl">
+    <select id="attn-sel"><option value="">default</option></select></div></div>
+  <div class="orow"><span class="lab">Latent upscale pass</span><div class="ctl">
+    <div class="chips" id="segUpscale">
+      <button class="on" data-v="off">Off</button><button data-v="on">On</button>
+    </div></div></div>
+  <div class="orow"><span class="lab">Tiled decode</span><div class="ctl">
+    <div class="chips" id="segTiled">
+      <button data-v="off">Off</button><button class="on" data-v="on">On</button>
+    </div></div></div>
+  <div class="orow"><span class="lab">Seed</span><div class="ctl">
+    <input type="text" id="seed" placeholder="Random" inputmode="numeric">
+    <button class="btn thin" id="btnSeedClear">Random</button></div></div>
+  <p class="note" id="costNote"></p>
+  <div class="rowbtn"><button class="btn thin" id="btnResetOpts">Back to defaults</button>
+    <button class="btn thin" id="btnCloseSettings">Done</button></div>
+</div>
+
+<!-- lightbox -->
+<div class="lightbox" id="lightbox" hidden>
+  <div class="stage"><video id="lbVideo" controls loop playsinline></video></div>
+  <div class="side">
+    <h3 id="lbTitle">Image</h3>
+    <div class="pr" id="lbPrompt"></div>
+    <div id="lbMeta"></div>
+    <div class="lbacts">
+      <button class="btn go" id="lbReuse">Reuse settings</button>
+      <button class="btn" id="lbVary">New seed</button>
+      <button class="btn" id="lbUpscale">RTX upscale ×2</button>
+      <button class="btn" id="lbDownload">Download</button>
+      <button class="btn" id="lbDelete">Delete</button>
+      <button class="btn" id="lbClose">Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- setup -->
+<div class="veil" id="veil-setup" hidden>
+  <div class="sheet">
+    <h1>Set up the engine</h1>
+    <p class="lede">MiniMax Studio runs MiniMax H3 on this machine through
+      ComfyUI. The first run installs ComfyUI, adds the nodes, and downloads the
+      weights — around 54 GB for the INT8 set. The preflight below says what your
+      hardware will make of that.</p>
+    <div id="setup-choice">
+      <div class="pick" id="pick-list"></div>
+      <label class="flab" style="margin-top:6px">Which weights</label>
+      <div class="pick" id="precision-list"></div>
+      <label class="flab" style="margin-top:6px">Turbo LoRA</label>
+      <div class="pick" id="turbo-list"></div>
+      <div class="grid2">
+        <div class="switch"><label for="opt-kjnodes">KJNodes (live preview)</label>
+          <input type="checkbox" id="opt-kjnodes" checked></div>
+        <div class="switch"><label for="opt-rtx">NVIDIA RTX nodes (upscaling)</label>
+          <input type="checkbox" id="opt-rtx" checked></div>
+        <div class="switch"><label for="opt-manager">ComfyUI-Manager</label>
+          <input type="checkbox" id="opt-manager" checked></div>
+        <div class="switch"><label for="opt-lowvram">Low-VRAM mode</label>
+          <input type="checkbox" id="opt-lowvram" checked></div>
+      </div>
+      <div id="preflight-setup" class="note"></div>
+      <div class="rowbtn">
+        <button class="btn go" id="btnRunSetup">Start setup</button>
+        <button class="btn" id="btnSkipSetup">Not now</button>
+      </div>
+      <p class="note">No Git or Python yet? The Engine page installs them for you.</p>
+    </div>
+    <div id="setup-progress" hidden>
+      <div class="steps" id="step-list"></div>
+      <div class="log" id="setup-log"></div>
+      <div class="rowbtn">
+        <button class="btn go" id="setup-done" hidden>Start creating</button>
+        <button class="btn" id="setup-retry" hidden>Try again</button>
+        <button class="btn" id="setup-hide">Hide</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- settings sheet -->
+<div class="veil" id="veil-settings" hidden>
+  <div class="sheet">
+    <h1>Settings</h1>
+    <p class="lede">Where the engine lives and how it starts.</p>
+    <div class="grid2">
+      <div><label class="flab" for="cfg-url">ComfyUI address</label>
+        <input type="text" id="cfg-url"></div>
+      <div><label class="flab" for="cfg-models">Models folder</label>
+        <input type="text" id="cfg-models"></div>
+      <div><label class="flab" for="cfg-dir">ComfyUI folder</label>
+        <input type="text" id="cfg-dir"></div>
+      <div class="switch" style="align-self:end"><label for="cfg-auto">Start ComfyUI with MiniMax Studio</label>
+        <input type="checkbox" id="cfg-auto"></div>
+    </div>
+    <div class="rowbtn">
+      <button class="btn go" id="btnSaveCfg">Save</button>
+      <button class="btn" id="btnStartComfy">Start ComfyUI now</button>
+      <button class="btn" id="btnCloseCfg">Close</button>
+    </div>
+    <p class="note" id="cfg-note"></p>
+  </div>
+</div>
+
+<div class="toast" id="toast" hidden></div>
+
+<script>
+"use strict";
+
+/* ========================= state ========================= */
+var S = {
+  view: "home", ratio: "16:9", mp: 0.2, seconds: 6, refs: [],
+  status: null, jobs: [], images: [], libFilter: "", batch: 1,
+  setupCursor: 0, taskId: null, taskCursor: 0, setupSeen: false, lightbox: null
+};
+function $(id) { return document.getElementById(id); }
+async function api(path, opts) {
+  var r = await fetch(path, opts), b = null;
+  try { b = await r.json(); } catch (e) { b = null; }
+  if (!r.ok) throw new Error((b && b.error) || ("Request failed: " + r.status));
+  return b;
+}
+function esc(s) {
+  return String(s == null ? "" : s).replace(/[&<>"]/g, function (c) {
+    return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]; });
+}
+function fmtSize(b) {
+  if (!b) return "—";
+  if (b >= 1e9) return (b / 1e9).toFixed(2) + " GB";
+  if (b >= 1e6) return (b / 1e6).toFixed(0) + " MB";
+  return (b / 1e3).toFixed(0) + " KB";
+}
+var toastTimer = null;
+function toast(msg, bad) {
+  var t = $("toast");
+  t.textContent = msg; t.classList.toggle("bad", !!bad); t.hidden = false;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(function () { t.hidden = true; }, bad ? 8000 : 3500);
+}
+function store(k, v) {
+  try {
+    if (v === undefined) return JSON.parse(localStorage.getItem(k));
+    localStorage.setItem(k, JSON.stringify(v));
+  } catch (e) { return null; }
+}
+function grow(ta) {
+  ta.style.height = "auto";
+  ta.style.height = Math.min(ta.scrollHeight, 200) + "px";
+}
+
+/* ========================= size ========================= */
+var RATIOS = { "16:9": [16, 9], "9:16": [9, 16], "1:1": [1, 1], "4:3": [4, 3] };
+function dims() {
+  var r = RATIOS[S.ratio] || [16, 9];
+  var unit = Math.sqrt(S.mp * 1024 * 1024 / (r[0] * r[1]));
+  return { w: Math.max(32, Math.round(r[0] * unit / 32) * 32),
+           h: Math.max(32, Math.round(r[1] * unit / 32) * 32) };
+}
+// H3 wants (length - 5) divisible by 17, same as the workflow's expression node
+function frames(sec, fps) {
+  var n = Math.max(5, Math.round(sec * (fps || 24)));
+  return n + (5 - (n % 17)) % 17;
+}
+function syncSize() {
+  var d = dims();
+  var f = frames(S.seconds, 24);
+  $("sizeVal").textContent = d.w + "×" + d.h;
+  $("lenVal").textContent = (f / 24).toFixed(1) + "s";
+  var note = $("costNote");
+  if (note) {
+    note.textContent = d.w + "×" + d.h + ", " + f + " frames at 24 fps — " +
+      (f / 24).toFixed(1) + " seconds of video and audio. Length snaps so that " +
+      "(frames − 5) divides by 17, which is what H3 expects.";
+  }
+  saveDraft();
+}
+
+/* ========================= draft ========================= */
+function saveDraft() {
+  store("mm.draft", { prompt: $("description").value, ratio: S.ratio, mp: S.mp,
+    seconds: S.seconds, refs: S.refs, steps: $("steps-sl").value,
+    shift: $("shift-sl").value, shift2: $("shift2-sl").value });
+}
+function loadDraft() {
+  var d = store("mm.draft");
+  if (!d) return;
+  $("description").value = d.prompt || "";
+  S.ratio = d.ratio || "16:9";
+  S.mp = Number(d.mp || 0.2);
+  S.seconds = Number(d.seconds || 6);
+  S.refs = d.refs || [];
+  $("mp-sl").value = S.mp;
+  $("sec-sl").value = S.seconds;
+  if (d.steps) { $("steps-sl").value = d.steps; $("stepsVal").textContent = d.steps; }
+  if (d.shift) { $("shift-sl").value = d.shift;
+    $("shiftVal").textContent = Number(d.shift).toFixed(1); }
+  if (d.shift2) { $("shift2-sl").value = d.shift2;
+    $("shift2Val").textContent = Number(d.shift2).toFixed(1); }
+  $("segRatio").querySelectorAll("button").forEach(function (b) {
+    b.classList.toggle("on", b.dataset.v === S.ratio); });
+  $("segSeconds").querySelectorAll("button").forEach(function (b) {
+    b.classList.toggle("on", Number(b.dataset.v) === S.seconds); });
+  renderRefs();
+  grow($("description"));
+}
+
+/* ========================= reference images ========================= */
+function renderRefs() {
+  var box = $("refsRow");
+  box.hidden = !S.refs.length;
+  box.innerHTML = "";
+  S.refs.forEach(function (r, i) {
+    var el = document.createElement("div");
+    el.className = "rescard";
+    el.style.position = "relative";
+    el.innerHTML = '<img src="' + esc(r.url) + '" alt="" style="aspect-ratio:1;' +
+      'object-fit:cover;width:100%;display:block;border-radius:10px">' +
+      '<div class="cap" style="padding:6px 8px"><span>' + esc(r.name) + "</span></div>";
+    var x = mkBtn("×", function () { S.refs.splice(i, 1); renderRefs(); saveDraft(); });
+    x.style.cssText = "position:absolute;top:6px;right:6px;padding:2px 8px";
+    el.appendChild(x);
+    box.appendChild(el);
+  });
+  $("refsLabel").textContent = S.refs.length
+    ? "References · " + S.refs.length : "References";
+  $("btnRefs").classList.toggle("on", S.refs.length > 0);
+}
+async function addRefs(input) {
+  var files = Array.prototype.slice.call(input.files || []);
+  for (var i = 0; i < files.length && S.refs.length < 3; i++) {
+    var fd = new FormData();
+    fd.append("file", files[i]);
+    try {
+      var r = await api("/api/upload", { method: "POST", body: fd });
+      S.refs.push({ name: r.name, url: URL.createObjectURL(files[i]) });
+    } catch (e) { toast(e.message, true); }
+  }
+  if ((input.files || []).length && S.refs.length >= 3) {
+    toast("H3 takes up to three reference images here.");
+  }
+  input.value = "";
+  renderRefs();
+  saveDraft();
+}
+
+/* ========================= views ========================= */
+function show(view) {
+  S.view = view;
+  document.querySelectorAll("[data-page]").forEach(function (p) {
+    p.hidden = p.dataset.page !== view; });
+  document.querySelectorAll(".nav[data-view]").forEach(function (b) {
+    if (b.dataset.view === view) b.setAttribute("aria-current", "page");
+    else b.removeAttribute("aria-current"); });
+  closePops();
+  $("mainCol").scrollTop = 0;
+  if (view === "models") { loadHf(); loadLocal(); pollTasks(); }
+  if (view === "engine") { loadDeps(); loadPreflight(); pollTasks(); }
+  if (view === "library") renderLib();
+  if (view === "home") renderHome();
+  if (view === "create") requestAnimationFrame(function () {
+    syncSize(); renderRefs(); renderFeed(); grow($("description")); });
+}
+function closePops() {
+  $("settingsPop").hidden = true;
+}
+function placePop(pop, anchor) {
+  pop.hidden = false;
+  var r = anchor.getBoundingClientRect();
+  var w = pop.offsetWidth;
+  pop.style.top = Math.min(r.bottom + 8, window.innerHeight - pop.offsetHeight - 12) + "px";
+  pop.style.left = Math.max(12, Math.min(r.left, window.innerWidth - w - 12)) + "px";
+}
+
+/* ========================= generate ========================= */
+var IDEAS = [
+  "A man in a dark coat walks to a rain-streaked window, looks out, then turns "
+  + "to camera and says it is finally quiet. Street noise outside, close mic.",
+  "A market stall at dawn. The vendor stacks mangoes, calls out a price, a cart "
+  + "rolls past behind. Handheld, warm morning light.",
+  "Two friends on a sofa mid-argument about football, one laughs and gives in. "
+  + "Living-room ambience, a television murmuring."
+];
+function segOn(id) {
+  var b = $(id) && $(id).querySelector("button.on");
+  return b ? b.dataset.v : "";
+}
+function collect() {
+  var d = dims();
+  return {
+    prompt: $("description").value.trim(),
+    refs: S.refs.map(function (r) { return r.name; }),
+    seconds: S.seconds, fps: 24, megapixels: S.mp, aspect: S.ratio,
+    width: d.w, height: d.h,
+    steps: Number($("steps-sl").value),
+    shift: Number($("shift-sl").value),
+    shift_2: Number($("shift2-sl").value),
+    sampler: $("sampler-sel").value,
+    scheduler: $("sched-sel").value,
+    attention: $("attn-sel").value,
+    upscale: segOn("segUpscale") === "on",
+    tiled_decode: segOn("segTiled") === "on",
+    seed: $("seed").value.trim() ? Number($("seed").value.trim()) : null,
+    dit: $("unet-sel").value,
+    runs: S.batch
+  };
+}
+async function generate() {
+  if (!S.status || !S.status.ready) { openSetup(); return; }
+  var p = collect();
+  if (!p.prompt && !p.refs.length) {
+    show("create");
+    toast("Describe the shot, or add a reference image.", true);
+    $("description").focus();
+    return;
+  }
+  show("create");
+  $("btnGenerate").disabled = true;
+  try {
+    await api("/api/generate", { method: "POST",
+      headers: { "Content-Type": "application/json" }, body: JSON.stringify(p) });
+    pollJobs();
+  } catch (e) { toast(e.message, true); }
+  finally { $("btnGenerate").disabled = false; }
+}
+var jobTimer = null;
+async function pollJobs() {
+  clearTimeout(jobTimer);
+  var jobs;
+  try { jobs = await api("/api/jobs"); }
+  catch (e) { jobTimer = setTimeout(pollJobs, 3000); return; }
+  var justDone = jobs.some(function (n) {
+    return n.status === "done" && S.jobs.some(function (o) {
+      return o.id === n.id && o.status === "running"; }); });
+  S.jobs = jobs;
+  if (justDone) {
+    await loadImages();
+    var done = jobs.filter(function (j) { return j.status === "done"; })[0];
+    var note = done && done.images && done.images[0] && done.images[0].note;
+    toast(note || "Clip ready.", !!note);
+  }
+  renderFeed();
+  if (jobs.some(function (j) { return j.status === "running"; }))
+    jobTimer = setTimeout(pollJobs, 1500);
+  else await loadImages();
+}
+
+/* ========================= feed and grids ========================= */
+function tile(im) {
+  var el = document.createElement("div");
+  el.className = "tile";
+  el.innerHTML = '<video src="/api/clip/' + im.id + '" muted loop playsinline ' +
+    'preload="metadata" style="width:100%;display:block;aspect-ratio:' +
+    (im.width || 16) + "/" + (im.height || 9) + '"></video>' +
+    '<div class="acts">' +
+    '<button data-act="reuse" title="Reuse settings"><svg viewBox="0 0 24 24">' +
+    '<path d="M4 9a8 8 0 0 1 14-4M20 15a8 8 0 0 1-14 4"/><path d="M18 4v5h-5M6 20v-5h5"/></svg></button>' +
+    '<button data-act="dl" title="Download"><svg viewBox="0 0 24 24">' +
+    '<path d="M12 4v11m0 0-4-4m4 4 4-4M5 20h14"/></svg></button>' +
+    '<button data-act="del" title="Delete"><svg viewBox="0 0 24 24">' +
+    '<path d="M6 6l12 12M18 6 6 18"/></svg></button></div>' +
+    '<div class="over"><div class="cap">' + esc(im.prompt || im.title) + "</div>" +
+    '<div class="meta">' + (im.width || "?") + "×" + (im.height || "?") + " · " +
+    (im.seconds || "?") + "s" + (im.upscaled ? " · upscaled" : "") +
+    " · seed " + im.seed + "</div></div>";
+  var vid = el.querySelector("video");
+  // Without this a tile is a black rectangle until you hover it: the browser
+  // fetches metadata but paints no frame. Nudging past zero forces one.
+  vid.addEventListener("loadedmetadata", function () {
+    try { vid.currentTime = 0.1; } catch (e) { /* seek not ready yet */ }
+  });
+  el.addEventListener("mouseenter", function () { vid.play().catch(function () {}); });
+  el.addEventListener("mouseleave", function () { vid.pause(); vid.currentTime = 0; });
+  vid.addEventListener("click", function () { openLightbox(im); });
+  el.querySelector(".over").addEventListener("click", function () { openLightbox(im); });
+  el.querySelectorAll("[data-act]").forEach(function (b) {
+    b.addEventListener("click", function (ev) {
+      ev.stopPropagation();
+      if (b.dataset.act === "reuse") reuse(im);
+      if (b.dataset.act === "dl") window.open("/api/clip/" + im.id, "_blank");
+      if (b.dataset.act === "del") removeImage(im);
+    });
+  });
+  return el;
+}
+function skeleton(job) {
+  var d = dims();
+  var el = document.createElement("div");
+  el.className = "skel" + (job.status === "error" ? " bad" : "");
+  var pct = Math.round(job.pct || 0);
+  el.innerHTML = '<div class="ph" style="aspect-ratio:' + d.w + "/" + d.h + '"></div>' +
+    '<div class="lbl"><span>' + esc(job.status === "error"
+      ? (job.error || "Failed") : (job.stage || "Working…")) + "</span><span>" +
+    (job.status === "error" ? "" : pct + "%") + "</span></div>" +
+    (job.status === "error" ? "" :
+      '<div class="bar4"><i style="width:' + pct + '%"></i></div>');
+  if (job.status === "running") {
+    var b = document.createElement("button");
+    b.className = "btn thin";
+    b.textContent = "Stop";
+    b.style.marginTop = "9px";
+    b.addEventListener("click", function () {
+      api("/api/jobs/" + job.id + "/cancel", { method: "POST" });
+      toast("Stopping.");
+    });
+    el.appendChild(b);
+  }
+  return el;
+}
+function renderFeed() {
+  var box = $("feed");
+  if (!box) return;
+  box.innerHTML = "";
+  var running = S.jobs.filter(function (j) {
+    return j.status === "running" || j.status === "error"; });
+  running.forEach(function (j) { box.appendChild(skeleton(j)); });
+  if (!S.images.length && !running.length) {
+    box.innerHTML = '<div class="empty"><b>Nothing here yet</b>' +
+      "Describe an image above and press Generate.</div>";
+    return;
+  }
+  S.images.slice(0, 60).forEach(function (im) { box.appendChild(tile(im)); });
+}
+function visibleImages(filter) {
+  var f = (filter || "").trim().toLowerCase();
+  if (!f) return S.images;
+  return S.images.filter(function (i) {
+    return (i.title + " " + (i.prompt || "")).toLowerCase().indexOf(f) >= 0; });
+}
+function renderLib() {
+  var box = $("libGrid");
+  if (!box) return;
+  var list = visibleImages(S.libFilter);
+  box.innerHTML = "";
+  if (!list.length) {
+    box.innerHTML = '<div class="empty"><b>Nothing here yet</b>' +
+      "Images you make land here.</div>";
+    return;
+  }
+  list.forEach(function (im) { box.appendChild(tile(im)); });
+}
+function renderHome() {
+  var box = $("homeGrid");
+  if (!box) return;
+  box.innerHTML = "";
+  if (!S.images.length) {
+    box.innerHTML = '<div class="empty"><b>Nothing yet</b>' +
+      "Describe an image above and press Generate.</div>";
+    return;
+  }
+  S.images.slice(0, 12).forEach(function (im) { box.appendChild(tile(im)); });
+}
+async function loadImages() {
+  try { S.images = await api("/api/clips"); }
+  catch (e) { return; }
+  renderFeed(); renderLib(); renderHome();
+}
+function reuse(im) {
+  $("description").value = im.prompt || "";
+  if (im.aspect) {
+    S.ratio = im.aspect;
+    $("segRatio").querySelectorAll("button").forEach(function (b) {
+      b.classList.toggle("on", b.dataset.v === S.ratio); });
+  }
+  if (im.megapixels) { S.mp = im.megapixels; $("mp-sl").value = S.mp; }
+  if (im.seconds) {
+    S.seconds = Math.max(1, Math.round(im.seconds));
+    $("sec-sl").value = S.seconds;
+    $("segSeconds").querySelectorAll("button").forEach(function (b) {
+      b.classList.toggle("on", Number(b.dataset.v) === S.seconds); });
+  }
+  if (im.steps) { $("steps-sl").value = im.steps; $("stepsVal").textContent = im.steps; }
+  if (im.shift) { $("shift-sl").value = im.shift;
+    $("shiftVal").textContent = Number(im.shift).toFixed(1); }
+  $("lightbox").hidden = true;
+  show("create");
+  grow($("description"));
+  syncSize();
+  saveDraft();
+  toast("Settings loaded. Reference images are not restored — add them again "
+        + "for the same faces.");
+}
+async function removeImage(im) {
+  if (!confirm("Delete this clip?")) return;
+  await api("/api/clip/" + im.id, { method: "DELETE" });
+  if (S.lightbox && S.lightbox.id === im.id) $("lightbox").hidden = true;
+  loadImages();
+}
+function openLightbox(im) {
+  S.lightbox = im;
+  $("lbVideo").src = "/api/clip/" + im.id;
+  $("lbTitle").textContent = im.title;
+  $("lbPrompt").textContent = im.prompt || "(no prompt)";
+  function short(x) {
+    return String(x || "").split(/[\\/]/).pop().replace(/\.safetensors$/, "");
+  }
+  var rows = [["Size", (im.width || "?") + " × " + (im.height || "?")],
+              ["Length", (im.seconds || "?") + " s · " + (im.length || "?") +
+               " frames"],
+              ["Seed", im.seed], ["Steps", im.steps || "—"],
+              ["Shift", im.shift || "—"],
+              ["Model", short(im.model) || "—"]];
+  if (im.lora) rows.push(["Turbo LoRA", short(im.lora)]);
+  if ((im.refs || []).length) rows.push(["References", im.refs.length]);
+  if (im.upscaled) rows.push(["Latent upscale", "yes"]);
+  if (im.kind === "rtx") rows.push(["RTX upscale", "yes"]);
+  if (im.note) rows.push(["Note", im.note]);
+  $("lbMeta").innerHTML = rows.map(function (r) {
+    return '<div class="kv"><span>' + esc(r[0]) + "</span><b>" + esc(r[1]) +
+      "</b></div>"; }).join("");
+  var rtx = S.status && S.status.capabilities && S.status.capabilities.rtx;
+  $("lbUpscale").hidden = !rtx;
+  $("lightbox").hidden = false;
+}
+async function rtxUpscale(scale) {
+  if (!S.lightbox) return;
+  try {
+    await api("/api/upscale/" + S.lightbox.id, { method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ scale: scale, quality: "ULTRA" }) });
+    $("lightbox").hidden = true;
+    show("create");
+    toast("Upscaling ×" + scale + " on the RTX SDK — no diffusion weights, so "
+          + "this one is quick.");
+    pollJobs();
+  } catch (e) { toast(e.message, true); }
+}
+
+/* ========================= preflight ========================= */
+async function loadPreflight() {
+  var d;
+  try { d = await api("/api/preflight"); } catch (e) { return; }
+  var tone = d.verdict === "ok" ? "ok" : d.verdict === "tight" ? "warn" : "missing";
+  var rows = [
+    ["GPU", (d.gpu || "not detected") +
+     (d.vram ? " · " + (d.vram / 1e9).toFixed(0) + " GB VRAM" : "")],
+    ["System RAM", d.ram ? (d.ram / 1e9).toFixed(0) + " GB" : "unknown"],
+    ["Free disk", d.free_disk ? (d.free_disk / 1e9).toFixed(0) + " GB" : "unknown"],
+    ["Download", d.download ? (d.download / 1e9).toFixed(0) + " GB" : "unknown"],
+    ["Peak resident", d.peak ? (d.peak / 1e9).toFixed(0) + " GB" : "unknown"]];
+  var html = '<div class="fitem"><div class="n"><b>' +
+    (d.verdict === "ok" ? "Should run" : d.verdict === "tight"
+      ? "Tight, but workable" : "Not enough headroom") + "</b><span>" +
+    esc(d.precision) + " weights · " + esc(d.turbo) +
+    '</span></div><div class="right"><span class="state ' + tone + '">' +
+    d.verdict + "</span></div></div>" +
+    rows.map(function (r) {
+      return '<div class="kv"><span>' + esc(r[0]) + "</span><b>" + esc(r[1]) +
+        "</b></div>"; }).join("") +
+    (d.notes || []).map(function (n) {
+      return '<p class="note">' + esc(n) + "</p>"; }).join("");
+  [$("preflight"), $("preflight-setup")].forEach(function (b) {
+    if (b) b.innerHTML = html; });
+}
+
+/* ========================= engine page ========================= */
+async function loadDeps() {
+  var box = $("dep-list");
+  try {
+    var d = await api("/api/deps");
+    $("torch-index").value = d.torch_index || "";
+    box.innerHTML = "";
+    var bad = 0;
+    d.items.forEach(function (it) {
+      if (it.state === "missing") bad++;
+      var el = document.createElement("div");
+      el.className = "fitem";
+      el.innerHTML = '<div class="n"><b>' + esc(it.label) + "</b><span>" +
+        esc(it.detail || "") + (it.hint ? " — " + esc(it.hint) : "") +
+        '</span></div><div class="right"><span class="state ' + it.state + '">' +
+        it.state + "</span></div>";
+      var right = el.querySelector(".right");
+      if (it.action === "models") {
+        right.appendChild(mkBtn("Open Models", function () { show("models"); }));
+      } else if (it.action === "start") {
+        right.appendChild(mkBtn("Start", startEngine));
+      } else if (it.action) {
+        var label = it.action === "update" ? "Update"
+          : it.action === "reinstall" ? "Reinstall" : "Install";
+        var b = mkBtn(label, function () { installDep(it.id, b); });
+        if (it.state === "missing") b.className = "btn thin go";
+        right.appendChild(b);
+      }
+      box.appendChild(el);
+    });
+    $("engineTag").hidden = bad === 0;
+  } catch (e) {
+    box.innerHTML = '<div class="empty bad-text">' + esc(e.message) + "</div>";
+  }
+}
+function mkBtn(label, fn) {
+  var b = document.createElement("button");
+  b.className = "btn thin";
+  b.textContent = label;
+  b.addEventListener("click", fn);
+  return b;
+}
+async function installDep(id, btn) {
+  if (btn) { btn.disabled = true; btn.textContent = "Working…"; }
+  try {
+    var r = await api("/api/deps/" + encodeURIComponent(id) + "/install",
+      { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ torch_index: $("torch-index").value }) });
+    S.taskId = r.task.id; S.taskCursor = 0; $("task-log").textContent = "";
+    pollTasks();
+  } catch (e) {
+    toast(e.message, true);
+    if (btn) { btn.disabled = false; btn.textContent = "Install"; }
+  }
+}
+function waitForTask(id) {
+  return new Promise(function (resolve) {
+    var tick = async function () {
+      try {
+        var t = await api("/api/tasks?id=" + id + "&since=99999");
+        if (t.state === "running") { setTimeout(tick, 1500); return; }
+        resolve(t.state === "done");
+      } catch (e) { resolve(false); }
+    };
+    tick();
+  });
+}
+async function installAllMissing() {
+  var order = ["git", "comfyui", "node:manager", "node:kjnodes", "torch"];
+  try {
+    var d = await api("/api/deps");
+    var missing = order.filter(function (id) {
+      return d.items.some(function (i) { return i.id === id && i.state === "missing"; });
+    });
+    if (!missing.length) { toast("Nothing missing. Try Start ComfyUI."); return; }
+    toast("Installing " + missing.length + " item(s), one after another.");
+    for (var i = 0; i < missing.length; i++) {
+      var r = await api("/api/deps/" + encodeURIComponent(missing[i]) + "/install",
+        { method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ torch_index: $("torch-index").value }) });
+      S.taskId = r.task.id; S.taskCursor = 0; $("task-log").textContent = "";
+      pollTasks();
+      var ok = await waitForTask(r.task.id);
+      if (!ok) { toast("Stopped at " + missing[i] + " — see the log.", true); return; }
+      await loadDeps();
+    }
+    toast("All set. Restart ComfyUI so it loads the nodes.");
+  } catch (e) { toast(e.message, true); }
+}
+async function startEngine() {
+  try {
+    await api("/api/comfy/start", { method: "POST" });
+    toast("Starting ComfyUI. The first start is slow.");
+  } catch (e) { toast(e.message, true); }
+}
+var taskTimer = null;
+async function pollTasks() {
+  clearTimeout(taskTimer);
+  var list = [];
+  try { list = await api("/api/tasks"); } catch (e) { return; }
+  var dls = list.filter(function (t) { return t.kind === "download"; });
+  var box = $("dl-list");
+  if (box) {
+    box.innerHTML = dls.length ? "" : '<div class="empty">No downloads running.</div>';
+    dls.slice(0, 8).forEach(function (t) {
+      var el = document.createElement("div");
+      el.className = "fitem";
+      el.style.display = "block";
+      el.innerHTML = '<div style="display:flex;gap:10px;align-items:center">' +
+        '<div class="n"><b>' + esc(t.title) + "</b><span>" + esc(t.detail || t.state) +
+        '</span></div><div class="right"><span class="state ' +
+        (t.state === "done" ? "ok" : t.state === "error" ? "missing" : "") + '">' +
+        t.state + "</span></div></div>" +
+        '<div class="bar4"><i style="width:' + Math.round(t.pct) + '%"></i></div>';
+      if (t.state === "running") {
+        var b = mkBtn("Stop", function () {
+          api("/api/tasks/" + t.id + "/cancel", { method: "POST" }).then(pollTasks); });
+        b.style.marginTop = "8px";
+        el.appendChild(b);
+      }
+      box.appendChild(el);
+    });
+  }
+  if (!S.taskId) {
+    var run = list.filter(function (t) {
+      return t.state === "running" && t.kind === "dependency"; })[0];
+    if (run) { S.taskId = run.id; S.taskCursor = 0; }
+  }
+  if (S.taskId) {
+    try {
+      var t = await api("/api/tasks?id=" + S.taskId + "&since=" + S.taskCursor);
+      S.taskCursor = t.cursor;
+      $("task-title").textContent = t.title + " — " + (t.detail || t.state);
+      if (t.lines.length) {
+        var log = $("task-log");
+        var bottom = log.scrollTop + log.clientHeight >= log.scrollHeight - 30;
+        log.textContent += t.lines.join("\n") + "\n";
+        if (bottom) log.scrollTop = log.scrollHeight;
+      }
+      $("btnCancelTask").hidden = t.state !== "running";
+      if (t.state !== "running") {
+        S.taskId = null;
+        loadDeps(); loadLocal(); refreshStatus();
+        toast(t.state === "done" ? t.title + " finished."
+          : t.title + " failed — check the log.", t.state !== "done");
+      }
+    } catch (e) { S.taskId = null; }
+  }
+  if (list.some(function (t) { return t.state === "running"; }))
+    taskTimer = setTimeout(pollTasks, 1400);
+}
+
+/* ========================= models page ========================= */
+async function loadHf() {
+  try {
+    var s = await api("/api/hf/settings");
+    $("hf-endpoint").value = s.endpoint;
+    $("hf-repo").value = s.repo;
+    $("hf-token-note").textContent = s.token_set
+      ? "A token is saved (" + s.token_hint + "). Leave the box empty to keep it."
+      : "No token saved. One is only needed if HuggingFace asks you to accept the "
+        + "MiniMax licence first.";
+    $("models-dir-note").textContent = s.models_dir
+      ? "Stored under " + s.models_dir : "No models folder set yet — run setup first.";
+    var sel = $("hf-folder");
+    sel.innerHTML = "";
+    s.folders.forEach(function (f) {
+      var o = document.createElement("option");
+      o.value = f; o.textContent = f; sel.appendChild(o); });
+    var box = $("setsList");
+    box.innerHTML = "";
+    Object.keys(s.curated.sets).forEach(function (key) {
+      var set = s.curated.sets[key];
+      var el = document.createElement("div");
+      el.className = "setrow" + (key === s.curated.precision ? " on" : "");
+      el.innerHTML = '<div class="n"><b>' + esc(set.label) + "</b><span>" +
+        esc(set.note) + '</span></div><div class="right"><span class="state ' +
+        (set.complete ? "ok" : "") + '">' +
+        (set.complete ? "installed" : set.files.filter(function (f) {
+          return f.installed; }).length + " of " + set.files.length) +
+        "</span></div>";
+      var right = el.querySelector(".right");
+      if (!set.complete) {
+        var b = mkBtn("Download set", function () { downloadSet(key, b); });
+        if (key === s.curated.precision) b.className = "btn thin go";
+        right.appendChild(b);
+      }
+      if (key !== s.curated.precision) {
+        right.appendChild(mkBtn("Use this", function () { usePrecision(key); }));
+      }
+      if (set.download) {
+        var sz = document.createElement("span");
+        sz.className = "state";
+        sz.textContent = (set.download / 1e9).toFixed(0) + " GB";
+        right.insertBefore(sz, right.firstChild);
+      }
+      box.appendChild(el);
+      set.files.forEach(function (f) {
+        var fe = document.createElement("div");
+        fe.className = "fitem";
+        fe.style.marginLeft = "14px";
+        fe.innerHTML = '<div class="n"><b>' + esc(f.name) + "</b><span>" +
+          esc(f.folder) + " · " + esc(f.why) + '</span></div><div class="right">' +
+          '<span class="state ' + (f.installed ? "ok" : "missing") + '">' +
+          (f.installed ? "have it" : "missing") + "</span></div>";
+        box.appendChild(fe);
+      });
+    });
+  } catch (e) { toast(e.message, true); }
+}
+async function usePrecision(key) {
+  await api("/api/config", { method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ precision: key }) });
+  loadHf(); refreshStatus();
+  toast("Switched to the " + key + " weights.");
+}
+async function downloadSet(key, btn) {
+  if (btn) { btn.disabled = true; btn.textContent = "Starting…"; }
+  try {
+    var r = await api("/api/hf/download", { method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ set: true, precision: key }) });
+    toast(r.note || ((r.tasks || []).length + " file(s) downloading."));
+    pollTasks(); loadHf();
+  } catch (e) {
+    toast(e.message, true);
+    if (btn) { btn.disabled = false; btn.textContent = "Download set"; }
+  }
+}
+async function browseRepo() {
+  var box = $("repo-list");
+  box.innerHTML = '<div class="empty">Reading the repo…</div>';
+  try {
+    var d = await api("/api/hf/browse?repo=" +
+      encodeURIComponent($("hf-repo").value.trim()));
+    box.innerHTML = "";
+    d.files.slice(0, 40).forEach(function (f) {
+      var el = document.createElement("div");
+      el.className = "fitem";
+      el.innerHTML = '<div class="n"><b>' + esc(f.path) + "</b><span>" + fmtSize(f.size) +
+        " · goes to " + esc(f.folder) + (f.inset ? " · part of your set" : "") +
+        '</span></div><div class="right"></div>';
+      var right = el.querySelector(".right");
+      if (f.installed) {
+        right.innerHTML = '<span class="state ok">installed</span>';
+      } else {
+        var b = mkBtn("Download", function () {
+          startDownload(d.repo, f.path, $("hf-folder").value || f.folder, b); });
+        right.appendChild(b);
+      }
+      box.appendChild(el);
+    });
+  } catch (e) { box.innerHTML = '<div class="empty bad-text">' + esc(e.message) + "</div>"; }
+}
+async function startDownload(repo, path, folder, btn) {
+  if (btn) { btn.disabled = true; btn.textContent = "Starting…"; }
+  try {
+    await api("/api/hf/download", { method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ repo: repo, path: path, folder: folder }) });
+    toast("Downloading " + path.split("/").pop());
+    pollTasks();
+  } catch (e) {
+    toast(e.message, true);
+    if (btn) { btn.disabled = false; btn.textContent = "Download"; }
+  }
+}
+async function loadLocal() {
+  try {
+    var d = await api("/api/hf/local");
+    var box = $("local-list");
+    box.innerHTML = "";
+    if (!d.models.length) {
+      box.innerHTML = '<div class="empty">No model files yet.</div>';
+      return;
+    }
+    d.models.forEach(function (m) {
+      var el = document.createElement("div");
+      el.className = "fitem";
+      el.innerHTML = '<div class="n"><b>' + esc(m.name) + "</b><span>" + esc(m.folder) +
+        " · " + fmtSize(m.size) + (m.partial ? " · unfinished" : "") +
+        '</span></div><div class="right"></div>';
+      el.querySelector(".right").appendChild(mkBtn("Delete", function () {
+        deleteModel(m.folder, m.name); }));
+      box.appendChild(el);
+    });
+  } catch (e) { /* not set up yet */ }
+}
+async function deleteModel(folder, name) {
+  if (!confirm("Delete " + name + " from disk?")) return;
+  try {
+    await api("/api/hf/local", { method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ folder: folder, name: name }) });
+    loadHf(); loadLocal(); refreshStatus();
+    toast("Deleted.");
+  } catch (e) { toast(e.message, true); }
+}
+
+/* ========================= setup ========================= */
+function openSetup() {
+  $("veil-setup").hidden = false;
+  $("setup-choice").hidden = false;
+  $("setup-progress").hidden = true;
+  renderPicks();
+}
+function renderPicks() {
+  var box = $("pick-list");
+  box.innerHTML = "";
+  var opts = [];
+  ((S.status && S.status.detected) || []).forEach(function (d) {
+    opts.push({ mode: "existing", dir: d, title: "Use the ComfyUI already here",
+                sub: d }); });
+  opts.push({ mode: "managed", dir: "",
+    title: "Install a fresh ComfyUI for MiniMax Studio",
+    sub: "Downloads ComfyUI, adds ComfyUI-Manager and KJNodes, builds its own Python "
+       + "environment and fetches the weights." });
+  opts.push({ mode: "external", dir: "",
+    title: "Connect to a ComfyUI I start myself",
+    sub: "Set the address in Settings first. Setup adds the nodes and weights only." });
+  opts.forEach(function (o, i) {
+    var l = document.createElement("label");
+    l.innerHTML = '<input type="radio" name="setupmode" value="' + i + '"' +
+      (i === 0 ? " checked" : "") + "><span><b>" + esc(o.title) + "</b><em>" +
+      esc(o.sub) + "</em></span>";
+    box.appendChild(l);
+  });
+  box._opts = opts;
+  var pbox = $("precision-list");
+  pbox.innerHTML = "";
+  var precisions = (S.status && S.status.precisions) || {};
+  var current = (S.status && S.status.config && S.status.config.precision) || "int8";
+  Object.keys(precisions).forEach(function (key) {
+    var l = document.createElement("label");
+    l.innerHTML = '<input type="radio" name="precision" value="' + key + '"' +
+      (key === current ? " checked" : "") + "><span><b>" +
+      esc(precisions[key].label) + "</b><em>" + esc(precisions[key].note) +
+      "</em></span>";
+    pbox.appendChild(l);
+  });
+  var tbox = $("turbo-list");
+  if (tbox) {
+    tbox.innerHTML = "";
+    var turbos = (S.status && S.status.turbos) || {};
+    var curT = (S.status && S.status.config && S.status.config.turbo) || "8step";
+    Object.keys(turbos).forEach(function (key) {
+      var l = document.createElement("label");
+      l.innerHTML = '<input type="radio" name="turbo" value="' + key + '"' +
+        (key === curT ? " checked" : "") + "><span><b>" + esc(turbos[key].label) +
+        "</b><em>" + turbos[key].steps + " steps</em></span>";
+      tbox.appendChild(l);
+    });
+  }
+  loadPreflight();
+}
+async function runSetup() {
+  var box = $("pick-list");
+  var sel = box.querySelector('input[name="setupmode"]:checked');
+  var opt = (box._opts || [])[sel ? Number(sel.value) : 0] || { mode: "managed", dir: "" };
+  var prec = document.querySelector('input[name="precision"]:checked');
+  $("setup-choice").hidden = true;
+  $("setup-progress").hidden = false;
+  $("setup-done").hidden = true;
+  $("setup-retry").hidden = true;
+  $("setup-log").textContent = "";
+  S.setupCursor = 0;
+  try {
+    await api("/api/setup/start", { method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode: opt.mode, comfy_dir: opt.dir,
+        precision: prec ? prec.value : "int8",
+        turbo: (document.querySelector('input[name="turbo"]:checked') || {}).value
+               || "8step",
+        want_kjnodes: $("opt-kjnodes").checked,
+        want_rtx: $("opt-rtx").checked,
+        want_manager: $("opt-manager").checked,
+        lowvram: $("opt-lowvram").checked }) });
+    pollSetup();
+  } catch (e) { toast(e.message, true); }
+}
+var setupTimer = null;
+async function pollSetup() {
+  clearTimeout(setupTimer);
+  var st;
+  try { st = await api("/api/setup/state?since=" + S.setupCursor); }
+  catch (e) { setupTimer = setTimeout(pollSetup, 2500); return; }
+  S.setupCursor = st.cursor;
+  var log = $("setup-log");
+  if (st.lines && st.lines.length) {
+    var bottom = log.scrollTop + log.clientHeight >= log.scrollHeight - 30;
+    log.textContent += st.lines.join("\n") + "\n";
+    if (bottom) log.scrollTop = log.scrollHeight;
+  }
+  var list = $("step-list");
+  list.innerHTML = "";
+  Object.keys(st.steps).forEach(function (k) {
+    var s = st.steps[k];
+    var d = document.createElement("div");
+    d.className = "step " + s.state;
+    d.innerHTML = '<span class="mark">' +
+      (s.state === "done" ? "✓" : s.state === "error" ? "!" : "") +
+      '</span><div><div class="lbl">' + esc(s.label) + '</div><div class="dt">' +
+      esc(s.detail || "") + "</div></div>";
+    list.appendChild(d);
+  });
+  if (st.done) { $("setup-done").hidden = false; await refreshStatus(); return; }
+  if (st.error) { $("setup-retry").hidden = false; return; }
+  setupTimer = setTimeout(pollSetup, 1200);
+}
+
+/* ========================= status ========================= */
+async function refreshStatus() {
+  var st;
+  try { st = await api("/api/status"); } catch (e) { return; }
+  S.status = st;
+  var pill = $("enginePill");
+  pill.classList.toggle("on", !!st.ready);
+  pill.classList.toggle("off", !st.comfy_online);
+  pill.querySelector("span").textContent = st.ready ? "Engine ready"
+    : !st.comfy_online ? "Engine offline"
+    : !st.nodes_ready ? "Nodes not loaded"
+    : st.missing_models.length ? "Weights missing" : "Engine loading";
+  $("modelsTag").hidden = !(st.missing_models && st.missing_models.length);
+  $("engineTag").hidden = !!(st.comfy_online && st.nodes_ready);
+  $("genLabel").textContent = st.ready ? "Generate" : "Set up";
+  if (st.samplers) fill($("sampler-sel"), st.samplers, "euler");
+  if (st.schedulers) fill($("sched-sel"), st.schedulers, "simple");
+  if (st.unets) {
+    var sel = $("unet-sel"), keep = sel.value;
+    sel.innerHTML = '<option value="">auto</option>';
+    st.unets.forEach(function (u) {
+      var o = document.createElement("option");
+      o.value = u;
+      o.textContent = u.split(/[\\/]/).pop().replace(/\.safetensors$/, "");
+      sel.appendChild(o); });
+    sel.value = keep;
+  }
+  if (st.attentions) fill($("attn-sel"), [""].concat(st.attentions), "");
+  var caps = st.capabilities || {};
+  $("btnRefs").title = caps.r2v === false
+    ? "The MiniMax H3 nodes are not loaded in ComfyUI." : "";
+  var c = st.config || {};
+  $("cfg-url").value = c.comfy_url || "";
+  $("cfg-dir").value = c.comfy_dir || "";
+  $("cfg-models").value = c.models_dir || "";
+  $("cfg-auto").checked = !!c.auto_start_comfy;
+  $("cfg-note").textContent = st.schema_error || "";
+  if (!st.setup_complete && !S.setupSeen) { S.setupSeen = true; openSetup(); }
+}
+function fill(sel, values, preferred) {
+  if (!values.length) return;
+  var keep = sel.value;
+  sel.innerHTML = "";
+  values.forEach(function (v) {
+    var o = document.createElement("option");
+    o.value = v; o.textContent = v; sel.appendChild(o); });
+  sel.value = values.indexOf(keep) >= 0 ? keep
+    : (values.indexOf(preferred) >= 0 ? preferred : values[0]);
+}
+
+/* ========================= wiring ========================= */
+function wire() {
+  document.querySelectorAll("[data-view]").forEach(function (b) {
+    b.addEventListener("click", function () { show(b.dataset.view); }); });
+  $("navSettings").addEventListener("click", function () {
+    $("veil-settings").hidden = false; });
+  $("enginePill").addEventListener("click", function () { show("engine"); });
+
+  $("description").addEventListener("input", function (e) {
+    grow(e.target); saveDraft(); });
+  $("homePrompt").addEventListener("input", function (e) { grow(e.target); });
+
+
+  $("segRatio").querySelectorAll("button").forEach(function (b) {
+    b.addEventListener("click", function () {
+      S.ratio = b.dataset.v;
+      $("segRatio").querySelectorAll("button").forEach(function (x) {
+        x.classList.toggle("on", x === b); });
+      syncSize();
+    });
+  });
+  $("btnBatch").addEventListener("click", function () {
+    S.batch = S.batch === 1 ? 2 : S.batch === 2 ? 4 : 1;
+    $("btnBatch").textContent = "×" + S.batch; });
+
+  $("btnSettings").addEventListener("click", function () {
+    var pop = $("settingsPop");
+    var open = !pop.hidden;
+    closePops();
+    if (!open) placePop(pop, $("btnSettings"));
+  });
+
+  $("btnCloseSettings").addEventListener("click", closePops);
+
+  document.addEventListener("pointerdown", function (e) {
+    ["settingsPop"].forEach(function (id) {
+      var pop = $(id);
+      if (pop.hidden) return;
+      if (pop.contains(e.target)) return;
+      if ($("btnSettings").contains(e.target)) return;
+      pop.hidden = true;
+    });
+  });
+
+  $("mp-sl").addEventListener("input", function (e) {
+    S.mp = Number(e.target.value); syncSize(); });
+  [["steps-sl", "stepsVal", function (v) { return String(v); }],
+   ["shift-sl", "shiftVal", function (v) { return v.toFixed(1); }],
+   ["shift2-sl", "shift2Val", function (v) { return v.toFixed(1); }]
+  ].forEach(function (row) {
+    $(row[0]).addEventListener("input", function (e) {
+      $(row[1]).textContent = row[2](Number(e.target.value)); saveDraft(); });
+  });
+  $("btnSeedClear").addEventListener("click", function () { $("seed").value = ""; });
+  $("btnResetOpts").addEventListener("click", function () {
+    $("steps-sl").value = 8; $("stepsVal").textContent = "8";
+    $("shift-sl").value = 6; $("shiftVal").textContent = "6.0";
+    $("shift2-sl").value = 3; $("shift2Val").textContent = "3.0";
+    $("mp-sl").value = 0.2; S.mp = 0.2;
+    $("sec-sl").value = 6; S.seconds = 6;
+    $("seed").value = "";
+    syncSize(); saveDraft(); toast("Back to defaults.");
+  });
+
+  $("btnGenerate").addEventListener("click", generate);
+  $("homeRun").addEventListener("click", function () {
+    var v = $("homePrompt").value.trim();
+    if (v) { $("description").value = v; grow($("description")); saveDraft(); }
+    generate();
+  });
+  $("homeOpen").addEventListener("click", function () {
+    var v = $("homePrompt").value.trim();
+    if (v) { $("description").value = v; grow($("description")); saveDraft(); }
+    show("create");
+  });
+  $("libSearch").addEventListener("input", function (e) {
+    S.libFilter = e.target.value; renderLib(); });
+
+  $("lbClose").addEventListener("click", function () { $("lightbox").hidden = true; });
+  $("lbReuse").addEventListener("click", function () {
+    if (S.lightbox) reuse(S.lightbox); });
+  $("lbDownload").addEventListener("click", function () {
+    if (S.lightbox) window.open("/api/image/" + S.lightbox.id, "_blank"); });
+  $("lbDelete").addEventListener("click", function () {
+    if (S.lightbox) removeImage(S.lightbox); });
+  $("lbVary").addEventListener("click", function () {
+    if (!S.lightbox) return;
+    reuse(S.lightbox);
+    $("seed").value = "";
+    $("lightbox").hidden = true;
+    generate();
+  });
+
+  $("btnRecheck").addEventListener("click", function () { loadDeps(); refreshStatus(); });
+  $("btnInstallAll").addEventListener("click", installAllMissing);
+  $("btnStartEngine").addEventListener("click", startEngine);
+  $("btnReRun").addEventListener("click", openSetup);
+  $("btnCancelTask").addEventListener("click", function () {
+    if (S.taskId) api("/api/tasks/" + S.taskId + "/cancel", { method: "POST" }); });
+  $("btnSaveTorch").addEventListener("click", async function () {
+    await api("/api/config", { method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ torch_index: $("torch-index").value }) });
+    toast("Saved. Reinstall PyTorch to use it.");
+  });
+
+  $("btnBrowse").addEventListener("click", browseRepo);
+  $("hf-repo").addEventListener("keydown", function (e) {
+    if (e.key === "Enter") browseRepo(); });
+  $("btnSaveHf").addEventListener("click", async function () {
+    try {
+      var b = { endpoint: $("hf-endpoint").value.trim(), repo: $("hf-repo").value.trim() };
+      if ($("hf-token").value) b.token = $("hf-token").value;
+      await api("/api/hf/settings", { method: "POST",
+        headers: { "Content-Type": "application/json" }, body: JSON.stringify(b) });
+      $("hf-token").value = "";
+      loadHf();
+      toast("Saved.");
+    } catch (e) { toast(e.message, true); }
+  });
+
+  $("btnRunSetup").addEventListener("click", runSetup);
+  $("setup-retry").addEventListener("click", runSetup);
+  $("btnSkipSetup").addEventListener("click", function () { $("veil-setup").hidden = true; });
+  $("setup-hide").addEventListener("click", function () { $("veil-setup").hidden = true; });
+  $("setup-done").addEventListener("click", function () {
+    $("veil-setup").hidden = true; show("create"); });
+  $("btnCloseCfg").addEventListener("click", function () { $("veil-settings").hidden = true; });
+  $("btnStartComfy").addEventListener("click", startEngine);
+  $("btnSaveCfg").addEventListener("click", async function () {
+    await api("/api/config", { method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ comfy_url: $("cfg-url").value.trim(),
+        comfy_dir: $("cfg-dir").value.trim(),
+        models_dir: $("cfg-models").value.trim(),
+        auto_start_comfy: $("cfg-auto").checked }) });
+    toast("Saved."); refreshStatus();
+  });
+
+  var sugg = $("suggestions");
+  IDEAS.forEach(function (idea) {
+    var b = document.createElement("button");
+    b.textContent = idea.slice(0, 54) + "…";
+    b.title = idea;
+    b.addEventListener("click", function () {
+      $("homePrompt").value = idea;
+      $("description").value = idea;
+      grow($("homePrompt")); grow($("description")); saveDraft();
+      show("create");
+    });
+    sugg.appendChild(b);
+  });
+
+  document.addEventListener("keydown", function (e) {
+    if ((e.ctrlKey || e.metaKey) && e.key === "Enter") { e.preventDefault(); generate(); }
+    if (e.key === "Escape") {
+      if (!$("lightbox").hidden) { $("lightbox").hidden = true; return; }
+      closePops();
+      $("veil-settings").hidden = true;
+      if ($("setup-progress").hidden) $("veil-setup").hidden = true;
+    }
+  });
+}
+
+/* ========================= boot ========================= */
+wire();
+loadDraft();
+syncSize();
+renderRefs();
+show("home");
+refreshStatus();
+loadImages();
+pollJobs();
+pollTasks();
+setInterval(refreshStatus, 6000);
+</script>
+</body>
+</html>

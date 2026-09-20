@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import os
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -171,6 +172,40 @@ def wanted_nodes(cfg: dict) -> list[dict]:
 
 
 # --------------------------------------------------------------------------- #
+# human-readable numbers
+# --------------------------------------------------------------------------- #
+def fmt_size(n: float) -> str:
+    n = float(n or 0)
+    if n >= 1e9:
+        return f"{n / 1e9:.2f} GB"
+    if n >= 1e6:
+        return f"{n / 1e6:.1f} MB" if n < 1e8 else f"{n / 1e6:.0f} MB"
+    if n >= 1e3:
+        return f"{n / 1e3:.0f} kB"
+    return f"{int(n)} B"
+
+
+def fmt_eta(seconds: float) -> str:
+    s = int(max(seconds or 0, 0))
+    if s >= 3600:
+        return f"{s // 3600}h {(s % 3600) // 60}m left"
+    if s >= 60:
+        return f"{s // 60}m {s % 60}s left"
+    return f"{s}s left"
+
+
+def fmt_transfer(got: float, total: float, speed: float, eta: float) -> str:
+    """One line of download state: how much, how fast, how much longer."""
+    bits = [f"{fmt_size(got)} of {fmt_size(total)}" if total
+            else f"{fmt_size(got)} so far"]
+    if speed > 0:
+        bits.append(f"{speed / 1e6:.1f} MB/s")
+    if total and speed > 0:
+        bits.append(fmt_eta(eta))
+    return " · ".join(bits)
+
+
+# --------------------------------------------------------------------------- #
 # preflight
 # --------------------------------------------------------------------------- #
 def _ram_bytes() -> int:
@@ -221,8 +256,71 @@ def _vram_bytes(python: str) -> tuple[int, str]:
         return 0, ""
 
 
+def assess(vram: int, ram: int, free_disk: int, download: int,
+           peak: int) -> tuple[str, list[str]]:
+    """The verdict from the measurements — calibrated against a real run.
+
+    An RTX 4060 (8 GB) with 32 GB of RAM renders H3 shots in minutes with
+    exactly this app's defaults: INT8 weights, the 8-step turbo LoRA,
+    low-VRAM mode, 0.2 MP, the latent upscale pass, RTX upscale after. So
+    8 GB is "tight — proven workable", not "hard". "Hard" is kept for what
+    genuinely blocks or breaks: less VRAM than that proven floor, too little
+    RAM to page through, no disk for the download.
+    """
+    notes, verdict = [], "ok"
+
+    def worse(level: str) -> None:
+        nonlocal verdict
+        order = ("ok", "tight", "hard")
+        if order.index(level) > order.index(verdict):
+            verdict = level
+
+    if vram and vram < 7e9:
+        worse("hard")
+        notes.append(f"{vram/1e9:.0f} GB of VRAM is under the 8 GB this app "
+                     "is tuned for. It will install and queue, but every "
+                     "step swaps weights and a shot can take an hour.")
+    elif vram and vram < 12e9:
+        worse("tight")
+        notes.append(f"{vram/1e9:.0f} GB of VRAM — proven workable: with "
+                     "low-VRAM mode the INT8 weights stream from system RAM "
+                     "and the 8-step turbo keeps a shot to minutes on an "
+                     "RTX 4060. Start at 0.2 MP and upscale afterwards.")
+    elif vram and vram < 20e9:
+        worse("tight")
+        notes.append(f"{vram/1e9:.0f} GB of VRAM — comfortable with "
+                     "offloading; higher megapixels are on the table.")
+    if ram and peak and ram < peak * 0.7:
+        worse("hard")
+        notes.append(f"{ram/1e9:.0f} GB of system RAM against a "
+                     f"{peak/1e9:.0f} GB peak — the larger of DiT or text "
+                     "encoder, plus the VAEs. That is not enough to page "
+                     "through; expect out-of-memory stops.")
+    elif ram and peak and ram < peak * 1.15:
+        worse("tight")
+        notes.append(f"{ram/1e9:.0f} GB of system RAM against a "
+                     f"{peak/1e9:.0f} GB peak — the bigger loads page "
+                     "through disk. Slower, not impossible; a fast SSD "
+                     "matters more than the number here.")
+    if free_disk and download and free_disk < download * 1.1:
+        worse("hard")
+        notes.append(f"{free_disk/1e9:.0f} GB free where the models go, and "
+                     f"the set needs {download/1e9:.0f} GB.")
+    if not vram:
+        notes.append("Could not read the GPU — install PyTorch, then recheck.")
+    if verdict == "tight":
+        notes.append("If a shot is still too slow, render small and press "
+                     "RTX upscale ×2 after — that pass runs on the NVIDIA "
+                     "SDK over decoded frames and costs almost no VRAM.")
+    if verdict == "hard":
+        notes.append("It will still install and queue; it may simply be too "
+                     "slow to use. Pointing Settings at a ComfyUI on a "
+                     "rented 24 GB box is the way round it.")
+    return verdict, notes
+
+
 def preflight(cfg: dict) -> dict:
-    """Measure the machine and say what it means, without softening it."""
+    """Measure the machine and say what that means for this model."""
     vram, gpu = _vram_bytes(comfy_python(cfg))
     ram = _ram_bytes()
     try:
@@ -236,31 +334,7 @@ def preflight(cfg: dict) -> dict:
     clip = next((i["size"] for i in items if i["folder"] == "text_encoders"), 0)
     peak = max(dit, clip) + VIDEO_VAE["size"] + AUDIO_VAE["size"]
 
-    notes, verdict = [], "ok"
-    if vram and vram < 12e9:
-        verdict = "hard"
-        notes.append(f"{vram/1e9:.0f} GB of VRAM. The DiT wants about 12 GB "
-                     "resident even in its smallest form, so every step streams "
-                     "weights from system memory.")
-    elif vram and vram < 20e9:
-        verdict = "tight"
-        notes.append(f"{vram/1e9:.0f} GB of VRAM — workable with offloading, "
-                     "but keep the resolution low.")
-    if ram and peak and ram < peak * 1.15:
-        verdict = "hard"
-        notes.append(f"{ram/1e9:.0f} GB of system RAM against a {peak/1e9:.0f} GB "
-                     "peak — the larger of DiT or text encoder, plus the VAEs. "
-                     "Expect heavy paging, or an out-of-memory stop.")
-    if free_disk and download and free_disk < download * 1.1:
-        verdict = "hard"
-        notes.append(f"{free_disk/1e9:.0f} GB free where the models go, and the "
-                     f"set needs {download/1e9:.0f} GB.")
-    if not vram:
-        notes.append("Could not read the GPU — install PyTorch, then recheck.")
-    if verdict == "hard":
-        notes.append("It will still install and queue; it may simply be too slow "
-                     "to use. Pointing Settings at a ComfyUI on a rented 24 GB "
-                     "box is the way round it.")
+    verdict, notes = assess(vram, ram, free_disk, download, peak)
     return {"vram": vram, "gpu": gpu, "ram": ram, "free_disk": free_disk,
             "download": download, "peak": peak, "verdict": verdict,
             "notes": notes, "precision": cfg.get("precision", "int8"),
@@ -284,8 +358,8 @@ class Progress:
         self.done = False
         self.error: str | None = None
         self.step = ""
-        self.steps = {k: {"label": v, "state": "pending", "detail": ""}
-                      for k, v in self.STEPS}
+        self.steps = {k: {"key": k, "label": v, "state": "pending",
+                          "detail": "", "pct": None} for k, v in self.STEPS}
 
     def log(self, msg: str) -> None:
         with self._lock:
@@ -299,27 +373,42 @@ class Progress:
             self.step = key
             self.steps[key]["state"] = "running"
             self.steps[key]["detail"] = detail
+            self.steps[key]["pct"] = None
 
     def detail(self, key: str, detail: str) -> None:
         with self._lock:
             self.steps[key]["detail"] = detail
 
+    def track(self, key: str, pct: float | None, detail: str = "") -> None:
+        """Move a step's bar. `pct` None means running with no number yet —
+        the front end shows an indeterminate bar rather than a fake 0%."""
+        with self._lock:
+            self.steps[key]["pct"] = (None if pct is None
+                                      else round(max(0.0, min(100.0, pct)), 1))
+            if detail:
+                self.steps[key]["detail"] = detail
+
     def finish(self, key: str, detail: str = "") -> None:
         with self._lock:
             self.steps[key]["state"] = "done"
+            self.steps[key]["pct"] = None
             if detail:
                 self.steps[key]["detail"] = detail
 
     def fail(self, key: str, detail: str) -> None:
         with self._lock:
             self.steps[key]["state"] = "error"
+            self.steps[key]["pct"] = None
             self.steps[key]["detail"] = detail
 
     def snapshot(self, since: int = 0) -> dict:
         with self._lock:
+            # A list, in the order the steps actually happen: jsonify sorts
+            # dict keys, which listed Check Python last on the one screen
+            # where order is the whole point.
+            steps = [dict(self.steps[k]) for k, _ in self.STEPS]
             return {"running": self.running, "done": self.done,
-                    "error": self.error, "step": self.step,
-                    "steps": json.loads(json.dumps(self.steps)),
+                    "error": self.error, "step": self.step, "steps": steps,
                     "cursor": len(self.lines), "lines": self.lines[since:]}
 
 
@@ -328,6 +417,65 @@ class Progress:
 # --------------------------------------------------------------------------- #
 def _run(cmd: list[str], **kw) -> subprocess.CompletedProcess:
     return subprocess.run(cmd, capture_output=True, text=True, **kw)
+
+
+def _stream(cmd: list[str], on_line, cwd: str | None = None,
+            env: dict | None = None) -> int:
+    r"""Run `cmd` and hand every line of its output to `on_line` as it appears.
+
+    Splits on carriage returns as well as newlines: git writes its progress by
+    rewriting one line with \r, so a plain line iterator would hold all of it
+    back until the clone finished — which is exactly the silence this is meant
+    to fill. Reads with read1() so a partial block is delivered straight away.
+    """
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT, cwd=cwd, env=env)
+    assert proc.stdout
+    buf = b""
+    while True:
+        block = proc.stdout.read1(8192)
+        if not block:
+            break
+        buf += block
+        parts = re.split(rb"[\r\n]", buf)
+        buf = parts.pop()
+        for raw in parts:
+            text = raw.decode("utf-8", "replace").strip()
+            if text:
+                on_line(text)
+    if buf.strip():
+        on_line(buf.decode("utf-8", "replace").strip())
+    return proc.wait()
+
+
+# git reports each phase as its own 0-100%; "Receiving objects" is the download.
+GIT_PHASE = re.compile(r"(Counting objects|Compressing objects|Receiving objects"
+                       r"|Resolving deltas|Updating files):\s+(\d+)%")
+
+
+def git_run(cmd: list[str], log, on_pct=None) -> tuple[int, str]:
+    """A git command with its progress forwarded. Returns (code, last output)."""
+    tail: list[str] = []
+
+    def line(text: str) -> None:
+        m = GIT_PHASE.search(text)
+        if m:
+            if on_pct:
+                on_pct(m.group(1), float(m.group(2)))
+            return
+        tail.append(text)
+        log(text[:200])
+
+    # C locale: the phase names above are what git prints in English, and a
+    # translated git would otherwise report no progress at all.
+    code = _stream(cmd, line, env=dict(os.environ, LC_ALL="C"))
+    return code, "\n".join(tail[-8:])
+
+
+def git_clone(url: str, target: Path, log, on_pct=None,
+              depth: int = 1) -> tuple[int, str]:
+    return git_run(["git", "clone", "--depth", str(depth), "--progress",
+                    url, str(target)], log, on_pct)
 
 
 def find_python(prog: Progress | None = None) -> str:
@@ -571,11 +719,16 @@ def comfy_online(url: str) -> bool:
         return False
 
 
-def wait_for_comfy(url: str, timeout: int = 900) -> bool:
-    deadline = time.time() + timeout
+def wait_for_comfy(url: str, timeout: int = 900, on_wait=None) -> bool:
+    """Poll until ComfyUI answers. `on_wait(elapsed, timeout)` runs each pass —
+    there is no percentage to give here, only how long it has been waiting."""
+    started = time.time()
+    deadline = started + timeout
     while time.time() < deadline:
         if comfy_online(url):
             return True
+        if on_wait:
+            on_wait(time.time() - started, timeout)
         time.sleep(2)
     return False
 
@@ -583,19 +736,77 @@ def wait_for_comfy(url: str, timeout: int = 900) -> bool:
 # --------------------------------------------------------------------------- #
 # pip / nodes
 # --------------------------------------------------------------------------- #
-def pip_install(python: str, args: list[str], log) -> None:
-    cmd = [python, "-m", "pip", "install"] + args
+# pip's own progress bar is a terminal animation and vanishes when its output
+# is a pipe, which is why a 2.4 GB torch wheel looks like a hang. `--progress-bar
+# raw` makes it print "Progress <done> of <total>" lines instead, which survive
+# the pipe. Older pips do not have it, so ask before using it.
+PIP_RAW = re.compile(r"^Progress (\d+) of (\d+)$")
+PIP_GET = re.compile(r"^\s*(?:Downloading|Using cached)\s+(\S+)")
+_PIP_RAW_OK: dict[str, bool] = {}
+
+
+def pip_has_raw_progress(python: str) -> bool:
+    if python not in _PIP_RAW_OK:
+        ok = False
+        try:
+            out = _run([python, "-m", "pip", "install", "--help"], timeout=60)
+            at = out.stdout.find("--progress-bar")
+            ok = at >= 0 and "raw" in out.stdout[at:at + 300]
+        except Exception:  # noqa: BLE001
+            ok = False
+        _PIP_RAW_OK[python] = ok
+    return _PIP_RAW_OK[python]
+
+
+def pip_install(python: str, args: list[str], log, on_pct=None) -> None:
+    """Install with pip. `on_pct(pct|None, detail)` is called as it downloads."""
+    import urllib.parse
+    cmd = [python, "-m", "pip", "install"]
+    if on_pct and pip_has_raw_progress(python):
+        cmd += ["--progress-bar", "raw"]
+    cmd += args
     log("$ " + " ".join(cmd[:8]) + (" …" if len(cmd) > 8 else ""))
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
-                            stderr=subprocess.STDOUT, text=True, bufsize=1)
-    assert proc.stdout
-    for line in proc.stdout:
-        line = line.rstrip()
-        if line.startswith(("Collecting", "Downloading", "Installing",
+
+    # Per-wheel transfer state: pip restarts the counter for every file.
+    cur = {"name": "", "base": 0, "started": 0.0, "last": 0.0}
+
+    def line(text: str) -> None:
+        m = PIP_RAW.match(text)
+        if m:
+            if not on_pct:
+                return
+            got, total = int(m.group(1)), int(m.group(2))
+            now = time.time()
+            if got < cur["base"] or not cur["started"]:
+                cur["base"], cur["started"] = got, now       # a new file
+            if now - cur["last"] < 0.4 and not (total and got >= total):
+                return
+            cur["last"] = now
+            speed = (got - cur["base"]) / max(now - cur["started"], .1)
+            eta = (total - got) / speed if speed > 0 and total else 0
+            label = cur["name"] or "package"
+            on_pct((got / total * 100) if total else None,
+                   f"{label} — {fmt_transfer(got, total, speed, eta)}")
+            return
+        m = PIP_GET.match(text)
+        if m:
+            cur.update(name=urllib.parse.unquote(
+                m.group(1).rsplit("/", 1)[-1])[:60],
+                base=0, started=0.0, last=0.0)
+        if text.startswith(("Collecting", "Downloading", "Installing",
                             "Successfully", "ERROR", "Building", "WARNING: ")):
-            log(line[:200])
-    if proc.wait() != 0:
+            log(text[:200])
+            if on_pct and text.startswith(("Installing", "Building")):
+                # Unpacking and byte-compiling: no byte count to report, and
+                # torch takes minutes over it, so say what is happening.
+                on_pct(None, text[:120])
+
+    if _stream(cmd, line) != 0:
         raise RuntimeError("pip install failed — see the log.")
+    if "pip" in args:
+        # pip just upgraded itself, so whether it can report progress may have
+        # changed. The very first install in a new venv is that upgrade.
+        _PIP_RAW_OK.pop(python, None)
 
 
 def torch_index(cfg: dict) -> str:
@@ -612,23 +823,52 @@ def torch_index(cfg: dict) -> str:
     return "https://download.pytorch.org/whl/cpu"
 
 
-def clone_node(node: dict, comfy_dir: Path, log) -> Path:
+def clone_node(node: dict, comfy_dir: Path, log, on_pct=None) -> Path:
     target = comfy_dir / "custom_nodes" / node["dir"]
     if target.exists():
         log(f"Updating {node['label']}")
-        _run(["git", "-C", str(target), "pull", "--ff-only"])
+        git_run(["git", "-C", str(target), "pull", "--ff-only", "--progress"],
+                log, on_pct)
         return target
     target.parent.mkdir(parents=True, exist_ok=True)
     urls = [node["repo"]] + ([node["fallback"]] if node.get("fallback") else [])
     errors = []
     for url in urls:
         log(f"git clone {url}")
-        res = _run(["git", "clone", "--depth", "1", url, str(target)])
-        if res.returncode == 0:
+        code, out = git_clone(url, target, log, on_pct)
+        if code == 0:
             return target
-        errors.append((res.stderr or res.stdout)[-200:])
+        errors.append(out[-300:])
         shutil.rmtree(target, ignore_errors=True)
     raise RuntimeError(f"Could not download {node['label']}: " + " | ".join(errors))
+
+
+# --------------------------------------------------------------------------- #
+# progress adapters
+# --------------------------------------------------------------------------- #
+# Each git phase is its own 0-100%, so stack them into one bar that only ever
+# moves forwards. Receiving objects is the transfer and takes nearly all of it.
+GIT_WEIGHT = {"Counting objects": (0.00, 0.02), "Compressing objects": (0.02, 0.03),
+              "Receiving objects": (0.05, 0.90), "Resolving deltas": (0.95, 0.04),
+              "Updating files": (0.95, 0.05)}
+
+
+def _git_pct(prog: Progress, key: str, head: str = "",
+             base: float = 0.0, span: float = 100.0):
+    """A git on_pct callback that drives `key`'s bar between base and base+span."""
+    def on_pct(phase: str, pct: float) -> None:
+        start, width = GIT_WEIGHT.get(phase, (0.0, 0.0))
+        line = f"{phase} — {pct:.0f}%"
+        prog.track(key, base + (start + width * pct / 100) * span,
+                   f"{head} · {line}" if head else line)
+    return on_pct
+
+
+def _pip_pct(prog: Progress, head: str, key: str = "deps"):
+    """A pip on_pct callback: pct is None while pip is not transferring bytes."""
+    def on_pct(pct: float | None, detail: str) -> None:
+        prog.track(key, pct, f"{head} · {detail}" if head else detail)
+    return on_pct
 
 
 # --------------------------------------------------------------------------- #
@@ -672,15 +912,16 @@ def run_setup(cfg: dict, prog: Progress, comfy: ComfyProcess,
                     if not have_git():
                         raise RuntimeError("Git is not installed. Install it "
                                            "from the Engine page first.")
-                    prog.detail("comfyui", "Downloading ComfyUI…")
-                    res = _run(["git", "clone", "--depth", "1", COMFY_REPO,
-                                str(comfy_dir)])
-                    if res.returncode != 0:
-                        raise RuntimeError("git clone failed: " +
-                                           (res.stderr or res.stdout)[-600:])
+                    prog.track("comfyui", None, "Downloading ComfyUI…")
+                    code, out = git_clone(COMFY_REPO, comfy_dir, prog.log,
+                                          _git_pct(prog, "comfyui"))
+                    if code != 0:
+                        raise RuntimeError("git clone failed: " + out[-600:])
                 else:
-                    prog.detail("comfyui", "Updating ComfyUI…")
-                    _run(["git", "-C", str(comfy_dir), "pull", "--ff-only"])
+                    prog.track("comfyui", None, "Updating ComfyUI…")
+                    git_run(["git", "-C", str(comfy_dir), "pull", "--ff-only",
+                             "--progress"], prog.log,
+                            _git_pct(prog, "comfyui"))
             if not (comfy_dir / "main.py").exists():
                 raise RuntimeError(f"No main.py in {comfy_dir}.")
             cfg["comfy_dir"] = str(comfy_dir)
@@ -697,10 +938,16 @@ def run_setup(cfg: dict, prog: Progress, comfy: ComfyProcess,
             wanted = wanted_nodes(cfg)
             if wanted and not have_git():
                 raise RuntimeError("Git is needed to install the custom nodes.")
-            for node in wanted:
-                prog.detail("nodes", f"Installing {node['label']}…")
+            for index, node in enumerate(wanted):
+                # one bar across all the nodes: each clone gets its slice
+                prog.track("nodes", index / len(wanted) * 100,
+                           f"Installing {node['label']}…")
                 try:
-                    node_paths.append(clone_node(node, comfy_dir, prog.log))
+                    node_paths.append(clone_node(
+                        node, comfy_dir, prog.log,
+                        _git_pct(prog, "nodes", node["label"],
+                                 base=index / len(wanted) * 100,
+                                 span=100 / len(wanted))))
                 except Exception as exc:  # noqa: BLE001
                     if node.get("optional"):
                         prog.log(f"Skipped {node['label']}: {exc}")
@@ -725,24 +972,28 @@ def run_setup(cfg: dict, prog: Progress, comfy: ComfyProcess,
                         raise RuntimeError("venv creation failed: " +
                                            (res.stderr or res.stdout)[-600:])
                 target = vpy
-                prog.detail("deps", "Installing PyTorch — the long one…")
-                pip_install(str(target), ["--upgrade", "pip", "wheel"], prog.log)
+                prog.track("deps", None, "Upgrading pip…")
+                pip_install(str(target), ["--upgrade", "pip", "wheel"],
+                            prog.log, _pip_pct(prog, "pip"))
                 args = ["torch", "torchvision", "torchaudio"]
                 idx = torch_index(cfg)
                 if idx:
                     args += ["--index-url", idx]
-                pip_install(str(target), args, prog.log)
-                prog.detail("deps", "Installing ComfyUI requirements…")
+                prog.track("deps", None, "Installing PyTorch — the long one…")
+                pip_install(str(target), args, prog.log,
+                            _pip_pct(prog, "PyTorch"))
+                prog.track("deps", None, "Installing ComfyUI requirements…")
                 pip_install(str(target),
                             ["-r", str(Path(cfg["comfy_dir"]) / "requirements.txt")],
-                            prog.log)
+                            prog.log, _pip_pct(prog, "ComfyUI requirements"))
             cfg["python"] = str(target)
             for path in node_paths:
                 reqs = path / "requirements.txt"
                 if reqs.exists():
-                    prog.detail("deps", f"Requirements for {path.name}…")
+                    prog.track("deps", None, f"Requirements for {path.name}…")
                     try:
-                        pip_install(str(target), ["-r", str(reqs)], prog.log)
+                        pip_install(str(target), ["-r", str(reqs)], prog.log,
+                                    _pip_pct(prog, path.name))
                     except Exception as exc:  # noqa: BLE001
                         prog.log(f"Skipped {path.name} requirements: {exc}")
             prog.finish("deps", f"Installed into {Path(cfg['python']).name}")
@@ -754,20 +1005,45 @@ def run_setup(cfg: dict, prog: Progress, comfy: ComfyProcess,
         else:
             for note in preflight(cfg)["notes"]:
                 prog.log("Preflight: " + note)
-            gb = sum(m["size"] for m in todo) / 1e9
-            prog.log(f"{len(todo)} file(s) to download"
-                     + (f", about {gb:.0f} GB" if gb else ""))
-            for item in todo:
-                def on_prog(got, total, speed, eta, _n=item["name"]):
-                    prog.detail("models",
-                                f"{_n} — {got/1e9:.1f} of {total/1e9:.1f} GB · "
-                                f"{speed/1e6:.1f} MB/s · "
-                                f"{int(eta//60)}m {int(eta%60)}s left")
+            # Ask each repo for the real sizes so one bar can cover the whole
+            # set. The hard-coded sizes are rough and some are zero, and a bar
+            # that only knows the current file jumps back to 0% five times.
+            sizes: dict[str, int] = {}
+            prog.track("models", None, "Checking what is on the repo…")
+            for repo in {m["repo"] for m in todo}:
+                try:
+                    for f in hf_tree(cfg, repo):
+                        sizes[f"{repo}/{f['path']}"] = f["size"]
+                except Exception as exc:  # noqa: BLE001
+                    prog.log(f"Could not read {repo}'s file list ({exc}). The "
+                             "bar will follow one file at a time instead.")
+            plan = [(item, int(sizes.get(f"{item['repo']}/{item['path']}")
+                               or item.get("size") or 0)) for item in todo]
+            grand = sum(s for _, s in plan)
+            prog.log(f"{len(plan)} file(s) to download "
+                     f"({cfg.get('precision', 'int8')} weights"
+                     + (f", {fmt_size(grand)}" if grand else "") + ")")
+            done_bytes = 0
+            for i, (item, size) in enumerate(plan, 1):
+                dest = model_path(models_dir, item)
+                head = f"{item['name']} ({i} of {len(plan)})"
 
-                download_file(cfg, item["repo"], item["path"],
-                              model_path(models_dir, item), on_prog)
+                def on_prog(got, total, speed, eta, _head=head):
+                    whole = ((done_bytes + got) / grand * 100) if grand else (
+                        (got / total * 100) if total else None)
+                    prog.track("models", whole,
+                               f"{_head} — " + fmt_transfer(got, total,
+                                                            speed, eta))
+
+                prog.track("models",
+                           (done_bytes / grand * 100) if grand else None,
+                           f"{head} — starting…")
+                download_file(cfg, item["repo"], item["path"], dest, on_prog)
+                done_bytes += size or (dest.stat().st_size
+                                       if dest.exists() else 0)
                 prog.log(f"Downloaded {item['name']}")
-            prog.finish("models", "Weights ready")
+            prog.finish("models", f"{len(plan)} file(s) ready"
+                        + (f" · {fmt_size(grand)}" if grand else ""))
 
         prog.begin("launch")
         url = cfg["comfy_url"]
@@ -781,8 +1057,15 @@ def run_setup(cfg: dict, prog: Progress, comfy: ComfyProcess,
             port = int(url.rsplit(":", 1)[-1])
             comfy.start(cfg["python"], Path(cfg["comfy_dir"]), port, prog,
                         cfg.get("lowvram", True))
-            prog.detail("launch", "Waiting for ComfyUI…")
-            if not wait_for_comfy(url, timeout=900):
+
+            def waiting(elapsed: float, limit: int) -> None:
+                s = int(elapsed)
+                been = f"{s // 60}m {s % 60}s" if s >= 60 else f"{s}s"
+                prog.track("launch", None, "Waiting for ComfyUI — "
+                           f"{been} so far. The first start is slow.")
+
+            prog.track("launch", None, "Waiting for ComfyUI…")
+            if not wait_for_comfy(url, timeout=900, on_wait=waiting):
                 raise RuntimeError("ComfyUI did not start within 15 minutes.\n"
                                    + "\n".join(comfy.tail(25)))
         prog.finish("launch", url)

@@ -14,10 +14,15 @@
 5. **Both VAEs are required.** The same AV latent is decoded twice — `VAEDecode`
    with the video VAE, `VAEDecodeAudio` with the audio VAE — then muxed by
    `CreateVideo`. Never drop the audio branch; H3's audio is generated, not added.
-6. **The preflight tells the truth.** It measures VRAM, RAM and free disk and
-   compares them to the real published file sizes. Do not soften its wording:
-   21 GB DiT + 27 GB text encoder against 8 GB VRAM / 32 GB RAM is a "hard"
-   verdict, and the person needs to know that before the download, not after.
+6. **The preflight tells the truth — and the truth is calibrated.** It
+   measures VRAM, RAM and free disk against the real published file sizes,
+   and its verdict comes from `assess()`, a pure function with unit tests.
+   The calibration is a real run, not a guess: an RTX 4060 (8 GB) with 32 GB
+   of RAM renders shots in minutes on this app's exact defaults, so
+   8 GB VRAM / 32 GB RAM is "tight — proven workable", never "hard". Keep
+   "hard" for what genuinely blocks: under ~7 GB of VRAM, RAM under ~70% of
+   the peak, disk short of the download. Do not soften "hard", and do not
+   re-harden "tight" — both directions misinform.
 7. **Low-VRAM launch flags** (`--lowvram --cache-none`) are the default and are
    the only reason the DiT loads at all on a small card.
 8. Python detection by execution, downloads resumable, model deletes path-checked

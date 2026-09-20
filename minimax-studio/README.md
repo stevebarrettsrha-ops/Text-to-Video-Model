@@ -19,21 +19,27 @@ H3 is a large model and the weights are the floor:
 | 8-step turbo LoRA | ~0.5 GB |
 
 ComfyUI holds one of the two big files at a time, so the peak is about **33 GB
-resident** and the download is about **54 GB**. On 8 GB of VRAM and 32 GB of RAM
-that is over the line — the app will install, queue and run, but every step
-streams weights from disk, so a six-second clip can take hours or stop on an
-out-of-memory error.
+resident** and the download is about **54 GB**.
+
+**8 GB of VRAM is workable — proven, not promised.** An RTX 4060 (8 GB)
+renders H3 shots in minutes with exactly this app's defaults: INT8 weights,
+the 8-step turbo LoRA, low-VRAM mode, 0.2 MP, tiled decode, the latent
+upscale pass, and the RTX video upscale at the end. The weights stream from
+system RAM, so a fast SSD and 32 GB of RAM matter; heavier settings (higher
+megapixels, more steps, the 40-step base schedule) are where 8 GB stops
+being practical.
 
 The **Preflight** panel on the Engine page measures your actual VRAM, RAM and
-free disk and says which of those applies, before anything is downloaded. If it
-says *not enough headroom*, the realistic routes are:
+free disk and says which of those applies, before anything is downloaded. If
+it says *not enough headroom* — under ~7 GB of VRAM, RAM far below the peak,
+or no disk for the download — the realistic routes are:
 
 - Point Settings at a ComfyUI running on a rented 24 GB box. Setup's third
   option ("connect to a ComfyUI I start myself") exists for this.
 - Use the RTX upscaler on its own. It runs on the NVIDIA SDK over decoded
   frames, holds no diffusion weights, and is comfortable on 8 GB.
 
-Nothing here hides that from you or pretends otherwise.
+Nothing here hides the numbers from you or pretends otherwise.
 
 ---
 

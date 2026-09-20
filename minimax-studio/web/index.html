@@ -212,6 +212,39 @@
        overflow:hidden;text-overflow:ellipsis}
   .hit .n span{font-size:11px;color:var(--dim)}
 
+  /* ---------- board: the cut as cards on a strip ---------- */
+  .board{padding:26px 26px 60px}
+  .boardbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:6px}
+  .boardbar .hint{font-size:12px;color:var(--dim);flex-basis:100%}
+  .strip{display:flex;gap:10px;align-items:flex-start;overflow-x:auto;
+         padding:18px 2px 26px}
+  .bcard{width:300px;flex:none;background:var(--panel);border:1px solid var(--hair);
+         border-radius:14px;padding:12px;cursor:grab}
+  .bcard.dragging{opacity:.4}
+  .bhead{display:flex;align-items:center;gap:8px;margin-bottom:8px;font-size:11px;
+         color:var(--muted)}
+  .bhead .num{font-weight:600;letter-spacing:.08em}
+  .bhead .grow{flex:1}
+  .bchain{font-size:10.5px;color:#cdbcff;background:rgba(124,77,255,.12);
+          border:1px solid rgba(124,77,255,.4);border-radius:6px;padding:2px 7px}
+  .bchain.off{color:var(--dim);background:transparent;border-color:var(--line)}
+  .bx{width:22px;height:22px;border-radius:6px;color:var(--dim);display:grid;
+      place-items:center}
+  .bx:hover{background:var(--raised);color:var(--text)}
+  .bcard textarea{min-height:72px;font-size:12.5px;margin-bottom:8px}
+  .bcard video{width:100%;aspect-ratio:16/9;object-fit:cover;border-radius:10px;
+               display:block;background:#000;cursor:pointer}
+  .bph{aspect-ratio:16/9;border:1px dashed #2c2c36;border-radius:10px;
+       display:grid;place-items:center;color:var(--dim);font-size:11.5px;
+       text-align:center;padding:10px}
+  .bph.bad{border-color:rgba(255,90,90,.5);color:#ff9a9a}
+  .bfoot{display:flex;align-items:center;gap:8px;margin-top:9px}
+  .bfoot select{width:auto;padding:5px 8px;font-size:12px;background:#212129}
+  .bfoot .grow{flex:1}
+  .blink{flex:none;align-self:center;color:var(--dim);font-size:16px;
+         padding-top:120px}
+  .blink.on{color:var(--accent)}
+
   /* ---------- pages: models + engine ---------- */
   .page{padding:26px 26px 80px;max-width:980px;margin:0 auto}
   .panel{background:var(--panel);border:1px solid var(--hair);border-radius:14px;
@@ -313,6 +346,8 @@
       <svg viewBox="0 0 24 24"><path d="M4 10.5 12 4l8 6.5V20a1 1 0 0 1-1 1h-4v-6H9v6H5a1 1 0 0 1-1-1z"/></svg>Home</button>
     <button class="nav" data-view="create">
       <svg viewBox="0 0 24 24"><path d="m12 3 2 5.5L19.5 10 14 12l-2 5.5L10 12 4.5 10 10 8.5z"/></svg>Generate</button>
+    <button class="nav" data-view="board">
+      <svg viewBox="0 0 24 24"><rect x="2" y="5" width="20" height="14" rx="2"/><path d="M6 5v14M18 5v14M2 9h4M2 15h4M18 9h4M18 15h4"/></svg>Board</button>
     <button class="nav" data-view="library">
       <svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>Library</button>
     <button class="nav" data-view="models">
@@ -396,6 +431,25 @@
       </div>
       <div class="feed">
         <div class="masonry" id="feed"></div>
+      </div>
+    </section>
+
+    <!-- board -->
+    <section data-page="board" hidden>
+      <div class="board">
+        <div class="boardbar">
+          <h2 style="margin:0;font-size:15px">The cut</h2>
+          <span class="grow" style="flex:1"></span>
+          <button class="btn" id="btnPlayBoard">Play the cut</button>
+          <button class="btn go" id="btnRenderBoard">Render remaining</button>
+          <button class="btn" id="btnAddShot">+ Add shot</button>
+          <span class="hint">One card per shot. A chained shot starts on the
+            previous shot's last frame, so faces and places carry through the
+            whole cut — the tag on each card turns that off. Drag cards to
+            reorder. Size, steps and the rest come from the generator's
+            Settings.</span>
+        </div>
+        <div class="strip" id="boardRow"></div>
       </div>
     </section>
 
@@ -631,7 +685,8 @@
 var S = {
   view: "home", ratio: "16:9", mp: 0.2, seconds: 6, refs: [],
   status: null, jobs: [], images: [], libFilter: "", batch: 1,
-  setupCursor: 0, taskId: null, taskCursor: 0, setupSeen: false, lightbox: null
+  setupCursor: 0, taskId: null, taskCursor: 0, setupSeen: false, lightbox: null,
+  board: [], boardJobs: {}
 };
 function $(id) { return document.getElementById(id); }
 async function api(path, opts) {
@@ -787,6 +842,7 @@ function show(view) {
   if (view === "engine") { loadDeps(); loadPreflight(); pollTasks(); }
   if (view === "library") renderLib();
   if (view === "home") renderHome();
+  if (view === "board") renderBoard();
   if (view === "create") requestAnimationFrame(function () {
     syncSize(); renderRefs(); renderFeed(); grow($("description")); });
 }
@@ -814,12 +870,12 @@ function segOn(id) {
   var b = $(id) && $(id).querySelector("button.on");
   return b ? b.dataset.v : "";
 }
-function collect() {
+// Everything the settings popover controls — shared by the prompt bar and
+// the board, so a board shot renders with the same recipe as a bar shot.
+function collectBase() {
   var d = dims();
   return {
-    prompt: $("description").value.trim(),
-    refs: S.refs.map(function (r) { return r.name; }),
-    seconds: S.seconds, fps: 24, megapixels: S.mp, aspect: S.ratio,
+    fps: 24, megapixels: S.mp, aspect: S.ratio,
     width: d.w, height: d.h,
     steps: Number($("steps-sl").value),
     shift: Number($("shift-sl").value),
@@ -830,9 +886,16 @@ function collect() {
     upscale: segOn("segUpscale") === "on",
     tiled_decode: segOn("segTiled") === "on",
     seed: $("seed").value.trim() ? Number($("seed").value.trim()) : null,
-    dit: $("unet-sel").value,
-    runs: S.batch
+    dit: $("unet-sel").value
   };
+}
+function collect() {
+  var p = collectBase();
+  p.prompt = $("description").value.trim();
+  p.refs = S.refs.map(function (r) { return r.name; });
+  p.seconds = S.seconds;
+  p.runs = S.batch;
+  return p;
 }
 async function generate() {
   if (!S.status || !S.status.ready) { openSetup(); return; }
@@ -862,6 +925,25 @@ async function pollJobs() {
     return n.status === "done" && S.jobs.some(function (o) {
       return o.id === n.id && o.status === "running"; }); });
   S.jobs = jobs;
+  // hand finished board jobs their clip ids
+  var boardChanged = false;
+  Object.keys(S.boardJobs).forEach(function (shotId) {
+    var job = jobs.filter(function (j) {
+      return j.id === S.boardJobs[shotId]; })[0];
+    if (!job || job.status === "running") return;
+    if (job.status === "done" && job.images && job.images[0]) {
+      var shot = S.board.filter(function (s) { return s.id === shotId; })[0];
+      if (shot) { shot.clip = job.images[0].id; boardChanged = true; }
+      delete S.boardJobs[shotId];
+    } else if (job.status !== "error") {
+      delete S.boardJobs[shotId];      // cancelled: leave the card blank
+    }
+  });
+  if (boardChanged) {
+    saveBoard(true);
+    await loadImages();
+    if (S.view === "board") renderBoard();
+  } else if (S.view === "board") updateBoardJobs();
   if (justDone) {
     await loadImages();
     var done = jobs.filter(function (j) { return j.status === "done"; })[0];
@@ -1015,10 +1097,22 @@ async function removeImage(im) {
   if (S.lightbox && S.lightbox.id === im.id) $("lightbox").hidden = true;
   loadImages();
 }
-function openLightbox(im) {
+function openLightbox(im, inSeq) {
+  if (!inSeq) lbSeq = null;
   S.lightbox = im;
-  $("lbVideo").src = "/api/clip/" + im.id;
-  $("lbTitle").textContent = im.title;
+  var vid = $("lbVideo");
+  vid.src = "/api/clip/" + im.id;
+  // playing the cut: no looping, and roll straight into the next shot
+  vid.loop = !lbSeq;
+  vid.onended = function () {
+    if (lbSeq && lbSeq.i + 1 < lbSeq.items.length) {
+      lbSeq.i += 1;
+      openLightbox(lbSeq.items[lbSeq.i], true);
+    }
+  };
+  if (lbSeq) vid.play().catch(function () {});
+  $("lbTitle").textContent = (lbSeq ? "Shot " + (lbSeq.i + 1) + " of " +
+    lbSeq.items.length + " — " : "") + im.title;
   $("lbPrompt").textContent = im.prompt || "(no prompt)";
   function short(x) {
     return String(x || "").split(/[\\/]/).pop().replace(/\.safetensors$/, "");
@@ -1084,25 +1178,29 @@ function captureLastFrame(im) {
     v.src = "/api/clip/" + im.id;
   });
 }
+// Capture a clip's last frame and hand it to ComfyUI as a reference image.
+// Both Continue this clip and the board's chaining go through here.
+async function frameRef(im) {
+  var blob = await captureLastFrame(im);
+  var fd = new FormData();
+  fd.append("file", new File([blob], "continue_" + im.id + ".png",
+                             { type: "image/png" }));
+  var up = await api("/api/upload", { method: "POST", body: fd });
+  return { name: up.name, url: URL.createObjectURL(blob) };
+}
 async function continueClip(im) {
   if (!S.status || !S.status.comfy_online) {
     toast("ComfyUI is not running. Start it from the Engine page.", true);
     return;
   }
   toast("Reading the last frame…");
-  var blob;
-  try { blob = await captureLastFrame(im); }
+  var ref;
+  try { ref = await frameRef(im); }
   catch (e) { toast(e.message, true); return; }
-  var fd = new FormData();
-  fd.append("file", new File([blob], "continue_" + im.id + ".png",
-                             { type: "image/png" }));
-  var up;
-  try { up = await api("/api/upload", { method: "POST", body: fd }); }
-  catch (e) { toast(e.message, true); return; }
-  S.refs = [{ name: up.name, url: URL.createObjectURL(blob) }];
+  S.refs = [ref];
   var carried = 0;
   (im.refs || []).forEach(function (name) {
-    if (S.refs.length < 3 && name !== up.name) {
+    if (S.refs.length < 3 && name !== ref.name) {
       S.refs.push({ name: name, url: "" });   // still in ComfyUI/input, by name
       carried++;
     }
@@ -1124,6 +1222,257 @@ async function continueClip(im) {
         + (carried ? ", with the clip's own reference image"
                      + (carried > 1 ? "s" : "") + " riding along" : "")
         + ". Describe what happens next.");
+}
+/* ========================= the board =========================
+   The whole cut on one strip, FlashBoards-style: one card per shot, each
+   carrying its prompt, its length and its rendered clip. A chained shot is
+   generated with the previous shot's last frame as reference 1 — the
+   continue-this-clip mechanic, applied card to card — so one press of
+   Render remaining walks the strip in order and the faces and places carry
+   through the whole sequence. The board itself lives in data/board.json,
+   next to the gallery. */
+var boardSaveTimer = null;
+async function loadBoard() {
+  try { S.board = await api("/api/board"); } catch (e) { S.board = []; }
+}
+function saveBoard(now) {
+  clearTimeout(boardSaveTimer);
+  var push = function () {
+    api("/api/board", { method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(S.board) }).catch(function () {});
+  };
+  if (now) push(); else boardSaveTimer = setTimeout(push, 600);
+}
+function shotClip(shot) {
+  for (var i = 0; i < S.images.length; i++) {
+    if (S.images[i].id === shot.clip) return S.images[i];
+  }
+  return null;
+}
+function addShot() {
+  S.board.push({ id: Math.random().toString(16).slice(2, 14), prompt: "",
+                 seconds: 6, chain: true, clip: "" });
+  saveBoard(true);
+  renderBoard();
+  var cards = $("boardRow").querySelectorAll(".bcard textarea");
+  if (cards.length) cards[cards.length - 1].focus();
+}
+function boardStatus(shot) {
+  var job = S.jobs.filter(function (j) {
+    return j.id === S.boardJobs[shot.id]; })[0];
+  var clip = shotClip(shot);
+  if (job && job.status === "running") {
+    var pct = Math.round(job.pct || 0);
+    return '<div class="bph">' + esc(job.stage || "Working…") + " · " + pct +
+      '%</div><div class="bar4"><i style="width:' + pct + '%"></i></div>';
+  }
+  if (job && job.status === "error") {
+    return '<div class="bph bad">' + esc(job.error || "Failed") + "</div>";
+  }
+  if (shot.clip && !clip && S.images.length) {
+    return '<div class="bph">That clip was deleted — render again.</div>';
+  }
+  if (clip) {
+    return '<video src="/api/clip/' + clip.id + '" muted loop playsinline ' +
+      'preload="metadata"></video>';
+  }
+  return '<div class="bph">Not rendered yet</div>';
+}
+function renderBoard() {
+  var row = $("boardRow");
+  if (!row) return;
+  row.innerHTML = "";
+  if (!S.board.length) {
+    row.innerHTML = '<div class="empty" style="width:100%"><b>An empty board' +
+      "</b>Add a shot per scene, then render them in order.</div>";
+    return;
+  }
+  S.board.forEach(function (shot, index) {
+    if (index) {
+      var link = document.createElement("div");
+      link.className = "blink" + (shot.chain ? " on" : "");
+      link.textContent = shot.chain ? "→" : "·";
+      link.title = shot.chain ? "Starts on the previous shot's last frame" : "";
+      row.appendChild(link);
+    }
+    var el = document.createElement("div");
+    el.className = "bcard";
+    el.draggable = true;
+    el.dataset.id = shot.id;
+    el.innerHTML = '<div class="bhead"><span class="num">SHOT ' + (index + 1) +
+      "</span>" +
+      (index ? '<button class="bchain' + (shot.chain ? "" : " off") +
+        '" data-act="chain" title="Start on the previous shot\'s last frame">' +
+        (shot.chain ? "chained" : "chain off") + "</button>" : "") +
+      '<span class="grow"></span>' +
+      '<button class="bx" data-act="del" title="Remove this shot">×</button></div>' +
+      '<textarea rows="3" spellcheck="false" placeholder="What happens in ' +
+      'this shot?">' + esc(shot.prompt) + "</textarea>" +
+      '<div class="bstatus">' + boardStatus(shot) + "</div>" +
+      '<div class="bfoot"><select data-act="secs">' +
+      [2, 4, 6, 8, 10, 12].map(function (v) {
+        return '<option value="' + v + '"' +
+          (Number(shot.seconds) === v ? " selected" : "") + ">" + v +
+          "s</option>"; }).join("") + "</select>" +
+      '<span class="grow"></span>' +
+      '<button class="btn thin' + (shot.clip ? "" : " go") +
+      '" data-act="gen">' + (shot.clip ? "Re-render" : "Generate") +
+      "</button></div>";
+    el.querySelector("textarea").addEventListener("input", function (e) {
+      shot.prompt = e.target.value;
+      saveBoard();
+    });
+    el.querySelector('[data-act="secs"]').addEventListener("change",
+      function (e) { shot.seconds = Number(e.target.value); saveBoard(); });
+    el.querySelector('[data-act="gen"]').addEventListener("click",
+      function (e) { boardGenerate(shot, e.target); });
+    el.querySelector('[data-act="del"]').addEventListener("click", function () {
+      if (shot.prompt.trim() && !confirm("Remove this shot from the board? "
+          + "Its rendered clip stays in the library.")) return;
+      S.board = S.board.filter(function (s) { return s.id !== shot.id; });
+      saveBoard(true);
+      renderBoard();
+    });
+    var chainBtn = el.querySelector('[data-act="chain"]');
+    if (chainBtn) chainBtn.addEventListener("click", function () {
+      shot.chain = !shot.chain;
+      saveBoard(true);
+      renderBoard();
+    });
+    var vid = el.querySelector("video");
+    if (vid) {
+      vid.addEventListener("loadedmetadata", function () {
+        try { vid.currentTime = 0.1; } catch (e) { /* not ready */ }
+      });
+      el.addEventListener("mouseenter", function () {
+        vid.play().catch(function () {}); });
+      el.addEventListener("mouseleave", function () {
+        vid.pause(); vid.currentTime = 0; });
+      vid.addEventListener("click", function () {
+        var clip = shotClip(shot);
+        if (clip) openLightbox(clip);
+      });
+    }
+    el.addEventListener("dragstart", function (e) {
+      e.dataTransfer.setData("text/plain", shot.id);
+      el.classList.add("dragging");
+    });
+    el.addEventListener("dragend", function () {
+      el.classList.remove("dragging"); });
+    el.addEventListener("dragover", function (e) { e.preventDefault(); });
+    el.addEventListener("drop", function (e) {
+      e.preventDefault();
+      var draggedId = e.dataTransfer.getData("text/plain");
+      if (!draggedId || draggedId === shot.id) return;
+      var from = S.board.findIndex(function (s) { return s.id === draggedId; });
+      var to = S.board.findIndex(function (s) { return s.id === shot.id; });
+      if (from < 0 || to < 0) return;
+      S.board.splice(to, 0, S.board.splice(from, 1)[0]);
+      saveBoard(true);
+      renderBoard();
+    });
+    row.appendChild(el);
+  });
+}
+function updateBoardJobs() {
+  // refresh only the status zones, so typing in a card is never interrupted
+  if (S.view !== "board") return;
+  $("boardRow").querySelectorAll(".bcard").forEach(function (el) {
+    var shot = S.board.filter(function (s) { return s.id === el.dataset.id; })[0];
+    if (!shot) return;
+    var zone = el.querySelector(".bstatus");
+    var html = boardStatus(shot);
+    if (zone.innerHTML !== html && !zone.querySelector("video")) {
+      zone.innerHTML = html;
+    }
+  });
+}
+async function boardGenerate(shot, btn) {
+  if (!S.status || !S.status.ready) { openSetup(); return null; }
+  var index = S.board.indexOf(shot);
+  var refs = [];
+  if (shot.chain && index > 0) {
+    var prev = shotClip(S.board[index - 1]);
+    if (!prev) {
+      toast("Shot " + index + " has no clip yet — render the shots in order, "
+            + "or turn this shot's chain off.", true);
+      return null;
+    }
+    if (btn) { btn.disabled = true; btn.textContent = "Reading frame…"; }
+    try { refs = [(await frameRef(prev)).name]; }
+    catch (e) {
+      toast(e.message, true);
+      if (btn) { btn.disabled = false; btn.textContent = "Generate"; }
+      return null;
+    }
+  }
+  if (!shot.prompt.trim() && !refs.length) {
+    toast("Describe the shot first.", true);
+    return null;
+  }
+  var p = collectBase();
+  p.prompt = shot.prompt.trim();
+  p.refs = refs;
+  p.seconds = Number(shot.seconds) || 6;
+  p.runs = 1;
+  p.title = "Shot " + (index + 1) + (p.prompt ? " — " + p.prompt : "");
+  try {
+    var r = await api("/api/generate", { method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(p) });
+    S.boardJobs[shot.id] = r.jobs[0];
+    shot.clip = "";
+    saveBoard(true);
+    pollJobs();
+    renderBoard();
+    return r.jobs[0];
+  } catch (e) {
+    toast(e.message, true);
+    if (btn) { btn.disabled = false; btn.textContent = "Generate"; }
+    return null;
+  }
+}
+async function renderAllBoard() {
+  var todo = S.board.filter(function (s) {
+    return !shotClip(s) && s.prompt.trim(); });
+  if (!todo.length) {
+    toast(S.board.length ? "Every written shot is rendered. Add or reword one."
+                         : "Add a shot first.");
+    return;
+  }
+  $("btnRenderBoard").disabled = true;
+  try {
+    // strictly in order: a chained shot needs the clip before it
+    for (var i = 0; i < S.board.length; i++) {
+      var shot = S.board[i];
+      if (shotClip(shot) || !shot.prompt.trim()) continue;
+      var jid = await boardGenerate(shot);
+      if (!jid) return;
+      var failed = await new Promise(function (resolve) {
+        var tick = async function () {
+          var job = S.jobs.filter(function (j) { return j.id === jid; })[0];
+          if (job && job.status !== "running") {
+            resolve(job.status !== "done"); return;
+          }
+          setTimeout(tick, 1200);
+        };
+        tick();
+      });
+      if (failed) { toast("Stopped at shot " + (i + 1) + ".", true); return; }
+    }
+    toast("The cut is rendered — press Play the cut.");
+  } finally {
+    $("btnRenderBoard").disabled = false;
+    renderBoard();
+  }
+}
+var lbSeq = null;
+function playBoard() {
+  var clips = S.board.map(shotClip).filter(Boolean);
+  if (!clips.length) { toast("Nothing is rendered yet.", true); return; }
+  lbSeq = { items: clips, i: 0 };
+  openLightbox(clips[0], true);
 }
 async function rtxUpscale(scale) {
   if (!S.lightbox) return;
@@ -1732,7 +2081,11 @@ function wire() {
   $("libSearch").addEventListener("input", function (e) {
     S.libFilter = e.target.value; renderLib(); });
 
-  $("lbClose").addEventListener("click", function () { $("lightbox").hidden = true; });
+  $("lbClose").addEventListener("click", function () {
+    $("lightbox").hidden = true;
+    $("lbVideo").pause();
+    lbSeq = null;
+  });
   $("lbReuse").addEventListener("click", function () {
     if (S.lightbox) reuse(S.lightbox); });
   $("lbDownload").addEventListener("click", function () {
@@ -1749,6 +2102,10 @@ function wire() {
     $("lightbox").hidden = true;
     generate();
   });
+
+  $("btnAddShot").addEventListener("click", addShot);
+  $("btnRenderBoard").addEventListener("click", renderAllBoard);
+  $("btnPlayBoard").addEventListener("click", playBoard);
 
   $("btnRecheck").addEventListener("click", function () { loadDeps(); refreshStatus(); });
   $("btnPreflight").addEventListener("click", loadPreflight);
@@ -1814,7 +2171,12 @@ function wire() {
   document.addEventListener("keydown", function (e) {
     if ((e.ctrlKey || e.metaKey) && e.key === "Enter") { e.preventDefault(); generate(); }
     if (e.key === "Escape") {
-      if (!$("lightbox").hidden) { $("lightbox").hidden = true; return; }
+      if (!$("lightbox").hidden) {
+        $("lightbox").hidden = true;
+        $("lbVideo").pause();
+        lbSeq = null;
+        return;
+      }
       closePops();
       $("veil-settings").hidden = true;
       if ($("setup-progress").hidden) $("veil-setup").hidden = true;
@@ -1830,6 +2192,7 @@ renderRefs();
 show("home");
 refreshStatus();
 loadImages();
+loadBoard();
 pollJobs();
 pollTasks();
 setInterval(refreshStatus, 6000);

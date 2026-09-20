@@ -49,6 +49,17 @@ ComfyUI/input), so `renderRefs` must keep tolerating refs with no local
 thumbnail URL. Seek to `duration − 1/24` before drawing: the exact end of
 some containers decodes to a blank frame.
 
+## The board
+
+`data/board.json` is server-side state like the gallery, sanitised on save
+(`_clean_shot`: known keys only, capped list). Chaining is defined by array
+order — shot *n* chains to shot *n−1* — which is why **Render remaining is
+strictly sequential**: a chained shot cannot start until the clip before it
+exists to capture a frame from. Board generation reuses `collectBase()` (the
+settings popover) and `frameRef()` (the continue-clip capture); do not grow a
+second copy of either. `updateBoardJobs` refreshes only the `.bstatus` zones
+so a full re-render never eats a keystroke in a card's textarea.
+
 ## Two bugs worth not reintroducing
 
 - `run_job` must use `built.get("seed")`: the RTX graph has no seed.

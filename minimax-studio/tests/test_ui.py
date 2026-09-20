@@ -74,7 +74,11 @@ def run(slow: bool = False) -> Suite:
         with studio(mock.url, ws / "data", models) as app, sync_playwright() as p:
             try:
                 exe = chromium_path()
-                browser = p.chromium.launch(executable_path=exe or None)
+                # the board's Play-the-cut rolls between shots without a fresh
+                # gesture; headless autoplay policy must not swallow that
+                browser = p.chromium.launch(
+                    executable_path=exe or None,
+                    args=["--autoplay-policy=no-user-gesture-required"])
             except Exception as exc:  # noqa: BLE001
                 print(f"  --   skipped: no Chromium to drive ({str(exc)[:80]})")
                 return s
@@ -159,7 +163,54 @@ def run(slow: bool = False) -> Suite:
             s.check("LoadImage reads the uploaded frame",
                     any(str(v).startswith("continue_") for v in loads))
 
+            # -- the board: two chained shots, rendered in order, played -------
+            pg.click('[data-view="board"]')
+            pg.click("#btnAddShot")
+            pg.fill("#boardRow .bcard:nth-child(1) textarea",
+                    "a man walks into an empty warehouse")
+            pg.click("#btnAddShot")
+            pg.fill("#boardRow .bcard:last-child textarea",
+                    "he stops and looks up at the skylight")
+            s.check("two cards on the strip, the second one chained",
+                    pg.eval_on_selector_all("#boardRow .bcard",
+                                            "els => els.length") == 2
+                    and pg.eval_on_selector("#boardRow .blink",
+                                            "el => el.textContent") == "→")
+            pg.click("#btnRenderBoard")
+            pg.wait_for_function(
+                "document.querySelectorAll('#boardRow .bcard video').length"
+                " === 2", timeout=60000)
+            s.check("Render remaining fills both cards, in order", True)
+            prompts = requests.get(mock.url + "/prompts", timeout=10).json()
+            last = list(prompts.values())[-1]
+            loads = [n["inputs"]["image"] for n in last.values()
+                     if n["class_type"] == "LoadImage"]
+            s.check("the chained shot starts on the first shot's last frame",
+                    any(str(v).startswith("continue_") for v in loads))
+            board = requests.get(app.url + "/api/board", timeout=10).json()
+            s.check("the board persists server-side with both clips",
+                    len(board) == 2 and all(b["clip"] for b in board))
+            pg.click("#btnPlayBoard")
+            pg.wait_for_selector("#lightbox:not([hidden])")
+            s.check("Play the cut starts at shot 1",
+                    str(pg.text_content("#lbTitle")).startswith("Shot 1 of 2"))
+            pg.wait_for_function(
+                "document.getElementById('lbTitle').textContent"
+                ".startsWith('Shot 2 of 2')", timeout=20000)
+            s.check("the player rolls into shot 2 on its own", True)
+            pg.keyboard.press("Escape")
+
+            # a reload keeps the board — it lives in board.json, not the tab
+            pg.reload()
+            pg.wait_for_timeout(1200)
+            pg.click('[data-view="board"]')
+            s.check("the board survives a reload",
+                    pg.eval_on_selector_all("#boardRow .bcard video",
+                                            "els => els.length") == 2)
+
             # -- RTX upscale from the lightbox ------------------------------------
+            pg.click('[data-view="create"]')
+            tiles = pg.eval_on_selector_all("#feed .tile", "els => els.length")
             pg.eval_on_selector("#feed .tile video",
                                 "el => el.scrollIntoView({block: 'center'})")
             pg.click("#feed .tile video")
@@ -168,8 +219,8 @@ def run(slow: bool = False) -> Suite:
                     pg.eval_on_selector("#lbUpscale", "el => !el.hidden"))
             pg.click("#lbUpscale")
             pg.wait_for_function(
-                "document.querySelectorAll('#feed .tile').length >= 3",
-                timeout=30000)
+                "document.querySelectorAll('#feed .tile').length === "
+                + str(tiles + 1), timeout=30000)
             s.check("the upscale lands as another tile", True)
 
             s.check("no page errors the whole way through", not errors,

@@ -26,6 +26,7 @@ from comfy import ComfyClient, ComfyError
 DATA_DIR = bootstrap.DATA_DIR          # honours MINIMAX_STUDIO_DATA
 CLIPS_DIR = DATA_DIR / "clips"
 GALLERY_PATH = DATA_DIR / "gallery.json"
+BOARD_PATH = DATA_DIR / "board.json"
 WEB_DIR = APP_DIR / "web"
 PORT = int(os.environ.get("MINIMAX_STUDIO_PORT", "7804"))
 
@@ -39,6 +40,7 @@ client = ComfyClient(cfg["comfy_url"])
 jobs: dict[str, dict] = {}
 jobs_lock = threading.Lock()
 gallery_lock = threading.Lock()
+board_lock = threading.Lock()
 ws_progress: dict[str, dict] = {}
 
 
@@ -562,6 +564,45 @@ def api_clip_delete(image_id: str):
                 pass
     write_gallery([i for i in items if i["id"] != image_id])
     return jsonify({"ok": True})
+
+
+# --------------------------------------------------------------------------- #
+# board — the storyboard: shot cards, chained into a cut
+# --------------------------------------------------------------------------- #
+def _clean_shot(shot) -> dict | None:
+    if not isinstance(shot, dict):
+        return None
+    return {"id": str(shot.get("id") or uuid.uuid4().hex[:12])[:32],
+            "prompt": str(shot.get("prompt") or "")[:4000],
+            "seconds": max(0.5, min(float(shot.get("seconds") or 6), 30)),
+            "chain": bool(shot.get("chain", True)),
+            "clip": str(shot.get("clip") or "")[:32]}
+
+
+@app.get("/api/board")
+def api_board():
+    with board_lock:
+        if not BOARD_PATH.exists():
+            return jsonify([])
+        try:
+            raw = json.loads(BOARD_PATH.read_text(encoding="utf-8"))
+        except Exception:
+            return jsonify([])
+    return jsonify([s for s in (_clean_shot(x) for x in raw) if s])
+
+
+@app.post("/api/board")
+def api_board_save():
+    body = request.get_json(silent=True)
+    shots = body if isinstance(body, list) else \
+        (body or {}).get("shots") if isinstance(body, dict) else None
+    if not isinstance(shots, list):
+        return jsonify({"error": "Send the board as a list of shots."}), 400
+    cleaned = [s for s in (_clean_shot(x) for x in shots[:200]) if s]
+    with board_lock:
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        BOARD_PATH.write_text(json.dumps(cleaned, indent=2), encoding="utf-8")
+    return jsonify({"ok": True, "shots": len(cleaned)})
 
 
 # --------------------------------------------------------------------------- #

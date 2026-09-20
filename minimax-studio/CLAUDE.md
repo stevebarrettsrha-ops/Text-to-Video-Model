@@ -39,6 +39,16 @@ nodes and an upscaler model, and falls back to base size with a note on the clip
 rather than failing. `ModelAttentionBackend` and `MiniMaxH3SigmaShift` are
 skipped if absent. The RTX action is hidden unless the node is loaded.
 
+## Continue this clip
+
+The last frame is captured **in the browser** — the same-origin clip drawn
+onto a canvas, exported as PNG, pushed through the ordinary `/api/upload`
+path. No server-side ffmpeg, no new dependency; keep it that way. The source
+clip's own reference images are carried by name (they are still in
+ComfyUI/input), so `renderRefs` must keep tolerating refs with no local
+thumbnail URL. Seek to `duration − 1/24` before drawing: the exact end of
+some containers decodes to a blank frame.
+
 ## Two bugs worth not reintroducing
 
 - `run_job` must use `built.get("seed")`: the RTX graph has no seed.

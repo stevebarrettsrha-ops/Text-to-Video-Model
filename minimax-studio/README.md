@@ -85,6 +85,23 @@ and muxed by `CreateVideo`.
 
 ---
 
+## Continuing a clip
+
+Open any finished clip and press **Continue this clip**. The clip's last frame
+is read right in the browser, uploaded like any reference image, and loaded as
+reference 1 in the generator — describe what happens next and press Generate.
+The clip's own reference images ride along by name, so the same faces carry
+into the next shot. That is how a long sequence is made with H3: one shot per
+prompt, each starting from the frame the last one ended on, audio generated
+with every clip, then the clips laid back to back in an editor.
+
+Two things to know:
+
+- H3 takes three references, so a continued shot keeps the frame plus the
+  first two of the source clip's own reference images.
+- The frame is a starting *reference*, not a frozen first frame — H3 keeps the
+  subjects and the scene, not the exact pixels.
+
 ## Upscaling a finished clip
 
 Open any clip and press **RTX upscale ×2**. The clip goes back to ComfyUI

@@ -48,6 +48,13 @@ WS_CLIENTS: list = []
 # Enough of an MP4 header that mimetypes and players recognise the bytes.
 FAKE_MP4 = b"\x00\x00\x00\x20ftypisom\x00\x00\x02\x00isomiso2mp41" + b"\x00" * 256
 
+# The browser tests need a clip a browser can actually decode. There is no
+# encoder here, so a test records one itself (canvas.captureStream +
+# MediaRecorder) and POSTs it to /testvideo; from then on every render is
+# served as that webm. Without it, renders are FAKE_MP4 — header-only bytes,
+# fine for the API tests, undecodable by design.
+TEST_VIDEO: list = []       # [bytes] once a test has posted one
+
 
 def _object_info():
     """The schema, with everything uploaded so far visible to LoadImage and
@@ -113,11 +120,13 @@ def _execute(pid, graph):
     else:
         status = {"status_str": "success", "messages": []}
         outputs = {}
+        with LOCK:
+            ext = ".webm" if TEST_VIDEO else ".mp4"
         for nid, node in graph.items():
             if node["class_type"] == "SaveVideo":
                 prefix = node["inputs"].get("filename_prefix", "video/ComfyUI")
                 outputs[nid] = {"images": [{
-                    "filename": f"{prefix.split('/')[-1]}_{pid}.mp4",
+                    "filename": f"{prefix.split('/')[-1]}_{pid}{ext}",
                     "subfolder": "video", "type": "output"}]}
     with LOCK:
         QUEUE_RUNNING.remove(pid)
@@ -218,7 +227,12 @@ class H(BaseHTTPRequestHandler):
             with LOCK:
                 self._send(200, {pid: HISTORY[pid]} if pid in HISTORY else {})
         elif p == "/view":
-            self._send(200, FAKE_MP4, "video/mp4")
+            with LOCK:
+                real = TEST_VIDEO[0] if TEST_VIDEO else None
+            if real:
+                self._send(200, real, "video/webm")
+            else:
+                self._send(200, FAKE_MP4, "video/mp4")
         elif p == "/prompts":            # test-only: what was queued
             with LOCK:
                 self._send(200, PROMPTS)
@@ -249,6 +263,10 @@ class H(BaseHTTPRequestHandler):
             with LOCK:
                 INTERRUPTS.extend(QUEUE_RUNNING)
             self._send(200, {})
+        elif p == "/testvideo":
+            with LOCK:
+                TEST_VIDEO[:] = [raw]
+            self._send(200, {"ok": True, "bytes": len(raw)})
         elif p == "/upload/image":
             # good enough multipart parsing for a stand-in: the filename field
             marker = b'filename="'

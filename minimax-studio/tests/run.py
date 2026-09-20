@@ -28,6 +28,7 @@ MODULES = [
     ("units", "the maths and the model set, against the workflow's own tables"),
     ("graph", "the prompts built from ComfyUI's own schema"),
     ("api", "the HTTP surface, end to end against a mock ComfyUI"),
+    ("ui", "the interface itself, in a browser"),
 ]
 
 

@@ -7,7 +7,7 @@ action on any finished clip.
 
 ---
 
-## Read this before you download 54 GB
+## Read this before you download 56 GB
 
 H3 is a large model and the weights are the floor:
 
@@ -15,11 +15,11 @@ H3 is a large model and the weights are the floor:
 |---|---|
 | `minimax_h3_ref2va_pruned_int8_convrot` (the DiT) | 21 GB |
 | `qwen3vl_32b_minimax_h3_int8_convrot` (text encoder, a 32B model) | 27.1 GB |
-| video VAE + audio VAE | 5.4 GB |
-| 8-step turbo LoRA | ~0.5 GB |
+| video VAE + audio VAE | 5.8 GB |
+| 8-step turbo LoRA | 2.0 GB |
 
 ComfyUI holds one of the two big files at a time, so the peak is about **33 GB
-resident** and the download is about **54 GB**.
+resident** and the download is about **56 GB**.
 
 **8 GB of VRAM is workable — proven, not promised.** An RTX 4060 (8 GB)
 renders H3 shots in minutes with exactly this app's defaults: INT8 weights,

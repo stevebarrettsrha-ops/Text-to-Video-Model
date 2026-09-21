@@ -118,6 +118,10 @@ def run(slow: bool = False) -> Suite:
             s.check("the dependency report covers the engine",
                     any(i["id"] == "engine" and i["state"] == "ok"
                         for i in deps["items"]))
+            s.check("a node the engine has loaded counts as ok, whatever "
+                    "folder it lives in",
+                    any(i["id"] == "node:rtx" and i["state"] == "ok"
+                        for i in deps["items"]))
             hf = requests.get(app.url + "/api/hf/settings", timeout=10).json()
             s.check("hf settings list the curated sets",
                     set(hf["curated"]["sets"]) == {"int8", "fp8", "nvfp4"})

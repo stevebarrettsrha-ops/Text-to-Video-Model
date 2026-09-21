@@ -242,6 +242,52 @@ def run(slow: bool = False) -> Suite:
             s.check("the app is ready once they land",
                     st_now["ready"] and st_now["missing_models"] == [])
 
+    # -- weights on disk, engine started before they landed --------------------
+    # ComfyUI scans its model folders once, at startup; this is the silent
+    # "nothing works" a real install hit: every list empty, generate failing
+    # with a download hint for a file that was already there.
+    with comfy(MOCK_BLANK_UNETS="999") as mock, Workspace() as ws:
+        models = ws / "models"
+        fake_weights(models)
+        with studio(mock.url, ws / "data", models) as app:
+            st = requests.get(app.url + "/api/status", timeout=10).json()
+            s.check("status names the stale-scan state",
+                    st["stale_models"] is True and st["comfy_online"])
+            requests.post(app.url + "/api/generate",
+                          json={"prompt": "doomed by stale scan"}, timeout=30)
+            jobs = finish_jobs(app.url)
+            s.check("the failure tells the person to restart, not re-download",
+                    jobs[0]["status"] == "error"
+                    and "restart ComfyUI" in jobs[0]["error"],
+                    jobs[0].get("error", "")[:90])
+            r = requests.post(app.url + "/api/comfy/restart", timeout=10)
+            s.check("restart refuses an engine it does not own, and says why",
+                    r.status_code == 409
+                    and "not started by MiniMax Studio" in r.json()["error"])
+            log = requests.get(app.url + "/api/comfy/log", timeout=10).json()
+            s.check("the engine console endpoint reports the same state",
+                    log["online"] is True and log["running"] is False)
+
+    # -- a different install answering the address ------------------------------
+    with comfy(MOCK_COMFY_ROOT="/opt/somebody-elses/ComfyUI") as mock, \
+            Workspace() as ws:
+        models = ws / "models"
+        fake_weights(models)
+        with studio(mock.url, ws / "data", models,
+                    comfy_dir="/opt/mine/ComfyUI") as app:
+            st = requests.get(app.url + "/api/status", timeout=10).json()
+            s.check("a foreign engine on the address is called out",
+                    st["engine_mismatch"] is True
+                    and "somebody-elses" in st["engine_argv"])
+    with comfy(MOCK_COMFY_ROOT="/opt/mine/ComfyUI") as mock, Workspace() as ws:
+        models = ws / "models"
+        fake_weights(models)
+        with studio(mock.url, ws / "data", models,
+                    comfy_dir="/opt/mine/ComfyUI") as app:
+            st = requests.get(app.url + "/api/status", timeout=10).json()
+            s.check("the right engine on the address is not",
+                    st["engine_mismatch"] is False)
+
     # -- ComfyUI down: refuse work, stay standing -----------------------------
     with Workspace() as ws:
         dead = f"http://127.0.0.1:{free_port()}"

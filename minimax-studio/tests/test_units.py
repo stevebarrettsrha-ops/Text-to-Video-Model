@@ -185,4 +185,32 @@ def run(slow: bool = False) -> Suite:
     v, notes = bootstrap.assess(0, 32 * GB, 500 * GB, dl, peak)
     s.check("no GPU reading is not a verdict, just a note",
             any("install pytorch" in n.lower() for n in notes))
+
+    # -- kill_pid tells the truth about a process that did stop -------------
+    # A zombie keeps its pid until its parent reaps it, while holding no
+    # sockets and running no code. Polling kill(pid, 0) counts one as alive,
+    # so a process that died politely is reported as needing a SIGKILL.
+    import os
+    import subprocess
+    import time as _time
+    child = subprocess.Popen([sys.executable, "-c", "pass"])
+    for _ in range(50):
+        if child.poll() is not None:
+            break
+        _time.sleep(0.05)
+    s.check("an unreaped child is a zombie, not a running process",
+            bootstrap._pid_gone(child.pid),
+            "it still answers kill(pid, 0), so only /proc/<pid>/stat knows")
+    child.wait()
+    s.check("a reaped pid is gone too", bootstrap._pid_gone(child.pid))
+    s.check("our own pid is not gone", not bootstrap._pid_gone(os.getpid()))
+
+    sleeper = subprocess.Popen([sys.executable, "-c",
+                               "import time; time.sleep(30)"])
+    said = bootstrap.kill_pid(sleeper.pid)
+    sleeper.wait()
+    s.equal("kill_pid says stopped for one that took the SIGTERM",
+            said, "stopped")
+    s.equal("and already gone for one that was never there",
+            bootstrap.kill_pid(sleeper.pid), "already gone")
     return s

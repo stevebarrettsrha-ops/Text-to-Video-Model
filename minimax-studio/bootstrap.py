@@ -818,6 +818,28 @@ def pid_cmdline(pid: int) -> str:
         return ""
 
 
+def _pid_gone(pid: int) -> bool:
+    """True once the pid is no longer a running process.
+
+    A zombie still answers kill(pid, 0): it keeps its pid until its parent
+    reaps it, while holding no sockets and running no code. Counting one as
+    alive costs five seconds of polling and then reports a SIGKILL that
+    stopped nothing — the opposite of what kill_pid is for.
+    """
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return True
+    except PermissionError:
+        return False
+    try:
+        # "12 (a name with spaces) Z 1 ..." — split after the last ')'.
+        state = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[-1].split()
+        return bool(state) and state[0] == "Z"
+    except OSError:
+        return False
+
+
 def kill_pid(pid: int) -> str:
     """Stop a process: politely first, firmly if it lingers. Returns what the
     system said about it, so a refusal (access denied, already gone) can be
@@ -836,9 +858,7 @@ def kill_pid(pid: int) -> str:
         return "access denied"
     for _ in range(25):
         time.sleep(0.2)
-        try:
-            os.kill(pid, 0)
-        except ProcessLookupError:
+        if _pid_gone(pid):
             return "stopped"
     try:
         os.kill(pid, signal.SIGKILL)

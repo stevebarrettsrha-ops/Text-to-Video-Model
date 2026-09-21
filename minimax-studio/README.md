@@ -65,8 +65,11 @@ Low-VRAM mode is on by default and launches ComfyUI with `--lowvram
 ## Making a clip
 
 The prompt bar holds everything: the shot description, aspect, length, up to
-three **reference images** (H3 keeps those faces and outfits), and Settings for
-the rest.
+three **reference images** (H3 keeps those faces and outfits), a **reference
+voice** (an audio file — H3 generates the clip's speech in that voice; press
+the pill again to remove it; it rides with every shot, board cards included),
+and Settings for the rest. None of it is required: a prompt alone is plain
+text-to-video.
 
 Two numbers are computed for you, the same way the workflow's helper nodes did
 it:

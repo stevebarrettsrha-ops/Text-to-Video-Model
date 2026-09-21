@@ -14,8 +14,9 @@ import requests
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from harness import (Suite, Workspace, comfy, fake_weights,  # noqa: E402
-                     finish_jobs, free_port, hub, studio, wait_for)
+from harness import (Suite, Workspace, comfy, fake_install,  # noqa: E402
+                     fake_weights, finish_jobs, free_port, hub, studio,
+                     wait_for)
 
 
 def run(slow: bool = False) -> Suite:
@@ -260,13 +261,48 @@ def run(slow: bool = False) -> Suite:
                     jobs[0]["status"] == "error"
                     and "restart ComfyUI" in jobs[0]["error"],
                     jobs[0].get("error", "")[:90])
-            r = requests.post(app.url + "/api/comfy/restart", timeout=10)
-            s.check("restart refuses an engine it does not own, and says why",
-                    r.status_code == 409
-                    and "not started by MiniMax Studio" in r.json()["error"])
             log = requests.get(app.url + "/api/comfy/log", timeout=10).json()
             s.check("the engine console endpoint reports the same state",
                     log["online"] is True and log["running"] is False)
+            # no install configured: Restart still closes the foreign engine
+            # rather than telling the person to go hunt it in Task Manager
+            r = requests.post(app.url + "/api/comfy/restart", timeout=60)
+            s.check("restart takes over an engine it does not own",
+                    r.ok and r.json()["how"] == "stopped"
+                    and "run setup" in r.json()["note"].lower(),
+                    str(r.json())[:90])
+            s.check("the foreign engine is actually gone",
+                    wait_for(lambda: not requests.get(
+                        app.url + "/api/comfy/log", timeout=10)
+                        .json()["online"], 15))
+
+    # -- full takeover: orphan on the port, a managed engine replaces it -------
+    with comfy() as orphan, Workspace() as ws:
+        install = fake_install(ws)
+        with studio(orphan.url, ws / "data", install / "models",
+                    comfy_dir=str(install), python=sys.executable) as app:
+            st = requests.get(app.url + "/api/status", timeout=10).json()
+            s.check("before: online but not managed",
+                    st["comfy_online"] and not st["engine_managed"])
+            r = requests.post(app.url + "/api/comfy/restart", timeout=120)
+            s.check("restart closes the orphan and starts a managed engine",
+                    r.ok and r.json()["how"] == "takeover", str(r.json())[:90])
+            s.check("the managed engine comes up in its place",
+                    wait_for(lambda: (lambda x: x["comfy_online"]
+                             and x["engine_managed"])(
+                        requests.get(app.url + "/api/status",
+                                     timeout=10).json()), 45))
+            st = requests.get(app.url + "/api/status", timeout=10).json()
+            s.check("and it sees the weights — no stale scan",
+                    st["stale_models"] is False
+                    and any("minimax" in u.lower() for u in st["unets"]))
+            r = requests.post(app.url + "/api/comfy/restart", timeout=120)
+            s.check("a second restart is the plain managed kind",
+                    r.ok and r.json()["how"] == "managed")
+            s.check("and it comes back again",
+                    wait_for(lambda: requests.get(
+                        app.url + "/api/status", timeout=10)
+                        .json()["comfy_online"], 45))
 
     # -- a different install answering the address ------------------------------
     with comfy(MOCK_COMFY_ROOT="/opt/somebody-elses/ComfyUI") as mock, \

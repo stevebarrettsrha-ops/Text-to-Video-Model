@@ -1635,13 +1635,25 @@ async function startEngine() {
 async function restartEngine() {
   var b = $("btnRestartEngine");
   b.disabled = true;
+  b.textContent = "Restarting…";
   try {
-    await api("/api/comfy/restart", { method: "POST" });
-    toast("Restarting ComfyUI — it rescans its model folders and loads new "
-          + "nodes now. Watch the console below.");
+    var r = await api("/api/comfy/restart", { method: "POST" });
+    if (r.how === "manager-reboot") {
+      toast("ComfyUI-Manager is rebooting the engine — it rescans models "
+            + "and loads new nodes on the way back up.");
+    } else if (r.how === "takeover") {
+      toast("That ComfyUI was not started here, so it was closed and a "
+            + "managed one is starting — models rescan now. Watch the "
+            + "console below.");
+    } else if (r.how === "stopped") {
+      toast(r.note || "Stopped it.", true);
+    } else {
+      toast("Restarting ComfyUI — it rescans its model folders and loads "
+            + "new nodes now. Watch the console below.");
+    }
     show("engine");
   } catch (e) { toast(e.message, true); }
-  finally { b.disabled = false; }
+  finally { b.disabled = false; b.textContent = "Restart ComfyUI"; }
 }
 
 /* The engine's own console, polled while the Engine page is open. This is
@@ -1674,8 +1686,8 @@ async function pollEngineLog() {
     state = d.online ? "Running — started by MiniMax Studio."
                      : "Starting… the first start is slow.";
   } else if (d.online) {
-    state = "Online, but started outside MiniMax Studio — Restart cannot "
-          + "reach it from here.";
+    state = "Online, but started outside MiniMax Studio — Restart ComfyUI "
+          + "will take it over.";
   } else {
     state = "Offline. Press Start ComfyUI.";
   }

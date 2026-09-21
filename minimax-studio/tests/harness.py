@@ -14,6 +14,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import textwrap
 import time
 from pathlib import Path
 
@@ -136,6 +137,42 @@ def comfy(delay: float = 1.0, **env) -> Server:
     port = free_port()
     return Server([sys.executable, str(MOCK), str(port)], port, "/system_stats",
                   env={"MOCK_DELAY": str(delay), **env})
+
+
+def fake_install(root: Path, stale_first_boot: bool = False) -> Path:
+    """A pretend ComfyUI checkout whose main.py serves the mock engine.
+
+    This is what lets the app truly own, stop and restart an engine process
+    in tests. With stale_first_boot, the FIRST launch serves empty model
+    lists — an engine that started before the weights landed — and any later
+    launch serves the full set, exactly like the real startup-scan behaviour.
+    """
+    install = root / "ComfyUI"
+    install.mkdir(parents=True, exist_ok=True)
+    (install / "main.py").write_text(textwrap.dedent(f"""\
+        import argparse, os, pathlib, runpy, sys
+        here = pathlib.Path(__file__).parent
+        p = argparse.ArgumentParser()
+        p.add_argument("--listen"); p.add_argument("--port")
+        p.add_argument("--disable-auto-launch", action="store_true")
+        p.add_argument("--lowvram", action="store_true")
+        p.add_argument("--cache-none", action="store_true")
+        a = p.parse_args()
+        flag = here / "stale.flag"
+        if flag.exists():
+            os.environ["MOCK_BLANK_UNETS"] = "999999"
+            flag.unlink()
+            print("model scan found no diffusion models", flush=True)
+        else:
+            print("model scan found the MiniMax H3 set", flush=True)
+        print("Starting server", flush=True)
+        sys.argv = ["mock_comfy.py", a.port]
+        runpy.run_path({str(MOCK)!r}, run_name="__main__")
+    """))
+    if stale_first_boot:
+        (install / "stale.flag").write_text("first boot is a stale scan")
+    fake_weights(install / "models")
+    return install
 
 
 def hub() -> Server:

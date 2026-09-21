@@ -15,6 +15,8 @@ import uuid
 import webbrowser
 from pathlib import Path
 
+import requests
+
 from flask import Flask, jsonify, request, send_file, send_from_directory
 
 import bootstrap
@@ -324,21 +326,87 @@ def api_comfy_start():
 
 @app.post("/api/comfy/restart")
 def api_comfy_restart():
-    """Stop and start the managed ComfyUI, so it rescans its model folders
-    and loads newly installed nodes — the two things only a restart does."""
-    if not comfy_proc.alive() and comfy_online(cfg["comfy_url"]):
-        return jsonify({"error": "This ComfyUI was not started by MiniMax "
-                        "Studio, so it cannot be restarted from here. Close "
-                        "it yourself, then press Start ComfyUI."}), 409
+    """Stop and start ComfyUI, so it rescans its model folders and loads
+    newly installed nodes — the two things only a restart does.
+
+    An engine this app did not start (an orphan from an earlier run, or one
+    launched by hand) is taken over rather than declared unreachable: first
+    ComfyUI-Manager's own reboot, and failing that the process holding the
+    configured port is verified to look like ComfyUI and stopped, then a
+    managed one starts in its place. The old advice — "close it yourself" —
+    asked people to hunt a windowless python in Task Manager.
+    """
+    url = cfg["comfy_url"]
+    port = int(url.rsplit(":", 1)[-1])
     py = bootstrap.comfy_python(cfg)
-    if not cfg.get("comfy_dir") or not py:
-        return jsonify({"error": "Run setup first."}), 400
-    comfy_proc.stop()
-    comfy_proc.start(py, Path(cfg["comfy_dir"]),
-                     int(cfg["comfy_url"].rsplit(":", 1)[-1]), progress,
+    can_start = bool(cfg.get("comfy_dir") and py)
+
+    if comfy_proc.alive():
+        if not can_start:
+            return jsonify({"error": "Run setup first."}), 400
+        comfy_proc.stop()
+        comfy_proc.start(py, Path(cfg["comfy_dir"]), port, progress,
+                         cfg.get("lowvram", True))
+        _refresh_schema_when_up()
+        return jsonify({"ok": True, "how": "managed"})
+
+    if not comfy_online(url):
+        if not can_start:
+            return jsonify({"error": "Run setup first."}), 400
+        comfy_proc.start(py, Path(cfg["comfy_dir"]), port, progress,
+                         cfg.get("lowvram", True))
+        _refresh_schema_when_up()
+        return jsonify({"ok": True, "how": "started"})
+
+    # online, but not ours — take it over
+    progress.log("Restart asked for a ComfyUI this app did not start — "
+                 "taking it over.")
+    try:
+        r = requests.post(f"{url}/manager/reboot", json={}, timeout=5)
+        accepted = r.status_code in (200, 201, 204)
+    except requests.exceptions.RequestException:
+        accepted = True          # the connection dropping is the reboot
+    if accepted:
+        deadline = time.time() + 10
+        while time.time() < deadline:
+            if not comfy_online(url):
+                progress.log("ComfyUI-Manager took the reboot; waiting for "
+                             "the engine to come back.")
+                _refresh_schema_when_up()
+                return jsonify({"ok": True, "how": "manager-reboot"})
+            time.sleep(0.5)
+
+    pids = bootstrap.port_pids(port)
+    if not pids:
+        return jsonify({"error": f"Something answers on port {port} but its "
+                        "process could not be found. Close it by hand "
+                        "(Task Manager), then press Start ComfyUI."}), 409
+    for pid in pids:
+        cmd = bootstrap.pid_cmdline(pid)
+        if cmd and not any(k in cmd.lower()
+                           for k in ("python", "main.py", "comfy")):
+            return jsonify({"error": f"Port {port} is held by something that "
+                            f"does not look like ComfyUI ({cmd[:90]}). Close "
+                            "it yourself, or point Settings at a different "
+                            "address."}), 409
+    for pid in pids:
+        progress.log(f"Stopping the ComfyUI on port {port} (pid {pid}).")
+        bootstrap.kill_pid(pid)
+    deadline = time.time() + 15
+    while comfy_online(url) and time.time() < deadline:
+        time.sleep(0.5)
+    if comfy_online(url):
+        return jsonify({"error": "It would not close. Close it in Task "
+                        "Manager, then press Start ComfyUI."}), 409
+    if not can_start:
+        return jsonify({"ok": True, "how": "stopped",
+                        "note": "Stopped it. This app has no ComfyUI of its "
+                                "own to start — run setup, or start yours "
+                                "again yourself."})
+    comfy_proc.start(py, Path(cfg["comfy_dir"]), port, progress,
                      cfg.get("lowvram", True))
     _refresh_schema_when_up()
-    return jsonify({"ok": True})
+    return jsonify({"ok": True, "how": "takeover"})
 
 
 @app.get("/api/comfy/log")

@@ -175,7 +175,14 @@ def dependencies(cfg: dict, client=None) -> list[dict]:
             loaded = client.has("RTXVideoSuperResolution")
         if client is not None and node["id"] == "kjnodes":
             loaded = client.has("ModelPreviewOverrideKJ")
-        if not installed:
+        if loaded:
+            # The engine has the node, wherever it lives on disk — a copy
+            # installed through ComfyUI-Manager sits under its own folder
+            # name, and that counts.
+            state = "ok"
+            detail = (str(comfy_dir / "custom_nodes" / node["dir"])
+                      if installed else "Loaded in ComfyUI.")
+        elif not installed:
             state, detail = "missing", node["why"]
         elif loaded is False:
             state = "warn"

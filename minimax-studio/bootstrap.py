@@ -40,9 +40,12 @@ CUSTOM_NODES = [
     {"id": "kjnodes", "dir": "ComfyUI-KJNodes", "label": "ComfyUI-KJNodes",
      "repo": "https://github.com/kijai/ComfyUI-KJNodes.git", "fallback": "",
      "why": "Live preview while a clip renders. Optional.", "optional": True},
-    {"id": "rtx", "dir": "comfyui_nvidia_rtx_nodes", "label": "NVIDIA RTX nodes",
-     "repo": "https://github.com/NVIDIA/ComfyUI-Nvidia-RTX-Nodes.git",
-     "fallback": "https://github.com/nvidia/comfyui_nvidia_rtx_nodes.git",
+    # Comfy-Org publishes these (registry id comfyui_nvidia_rtx_nodes); the
+    # NVIDIA org has no such repo and two guessed URLs there 404ed every
+    # install until a real machine hit it.
+    {"id": "rtx", "dir": "Nvidia_RTX_Nodes_ComfyUI", "label": "NVIDIA RTX nodes",
+     "repo": "https://github.com/Comfy-Org/Nvidia_RTX_Nodes_ComfyUI.git",
+     "fallback": "",
      "why": "RTX Video Super Resolution — upscales a finished clip on the "
             "NVIDIA SDK rather than on diffusion weights, so it is comfortable "
             "on a small card.",
@@ -54,21 +57,23 @@ CUSTOM_NODES = [
      "optional": True},
 ]
 
-# Published file sizes, so the totals the app shows are real. 0 means "ask
-# HuggingFace when it is time to download".
+# Published file sizes, so the totals the app shows are real — measured from
+# files on disk after a real install, not guessed. 0 means "ask HuggingFace
+# when it is time to download".
 PRECISIONS = {
     "int8": {"label": "INT8 — widest support",
              "note": "Any recent NVIDIA card. 21 GB DiT, 27 GB text encoder.",
              "dit": {"name": "minimax_h3_ref2va_pruned_int8_convrot.safetensors",
                      "size": 21_000_000_000},
              "clip": {"name": "qwen3vl_32b_minimax_h3_int8_convrot.safetensors",
-                      "size": 27_100_000_000}},
-    "fp8": {"label": "FP8 — smaller DiT",
-            "note": "Ada (RTX 40) and newer. Same 27 GB text encoder.",
+                      "size": 27_140_000_000}},
+    "fp8": {"label": "FP8 — faster on Ada",
+            "note": "RTX 40 and newer. 21 GB DiT (same size, faster fp8 "
+                    "kernels), same 27 GB text encoder.",
             "dit": {"name": "minimax_h3_ref2va_pruned_fp8_scaled.safetensors",
-                    "size": 0},
+                    "size": 20_960_000_000},
             "clip": {"name": "qwen3vl_32b_minimax_h3_int8_convrot.safetensors",
-                     "size": 27_100_000_000}},
+                     "size": 27_140_000_000}},
     "nvfp4": {"label": "NVFP4 text encoder — Blackwell only",
               "note": "RTX 50 series. Emulated and slow on anything older.",
               "dit": {"name": "minimax_h3_ref2va_pruned_int8_convrot.safetensors",
@@ -77,13 +82,13 @@ PRECISIONS = {
                        "size": 0}},
 }
 
-VIDEO_VAE = {"name": "minimax_h3_video_vae_fp16.safetensors", "size": 4_850_000_000}
-AUDIO_VAE = {"name": "minimax_h3_audio_vae_fp32.safetensors", "size": 564_000_000}
+VIDEO_VAE = {"name": "minimax_h3_video_vae_fp16.safetensors", "size": 5_210_000_000}
+AUDIO_VAE = {"name": "minimax_h3_audio_vae_fp32.safetensors", "size": 605_000_000}
 
 TURBO_LORAS = {
     "8step": {"name": "minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors",
               "repo": MODEL_REPO, "folder": "loras", "steps": 8,
-              "label": "8-step turbo", "size": 0},
+              "label": "8-step turbo", "size": 1_960_000_000},
     "4step": {"name": "minimax_h3_fl2v_turbo_4step_v1.1_768p_comfyui_bf16.safetensors",
               "repo": TURBO_REPO, "folder": "", "steps": 4,
               "label": "4-step turbo (768p)", "size": 0},

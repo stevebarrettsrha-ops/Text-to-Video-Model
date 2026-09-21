@@ -250,6 +250,22 @@ def api_status():
             payload["attentions"] = client.attention_backends()
         except Exception as exc:  # noqa: BLE001
             payload["schema_error"] = str(exc)
+        # The two silent "nothing works" states, named. ComfyUI scans its
+        # model folders once, at startup: weights that landed later are on
+        # disk yet absent from its lists until a restart. And an address can
+        # be answered by a different install than the one set up here.
+        payload["stale_models"] = bool(
+            not missing and models_dir and models_dir.is_dir()
+            and not any("minimax" in u.lower()
+                        for u in payload.get("unets") or []))
+        stats = bootstrap.comfy_stats(cfg["comfy_url"]) or {}
+        argv = (stats.get("argv") or [""])[0]
+        payload["engine_argv"] = argv
+        want = (str(Path(cfg["comfy_dir"])).replace("\\", "/").lower()
+                if cfg.get("comfy_dir") else "")
+        payload["engine_mismatch"] = bool(
+            argv and want and want not in argv.replace("\\", "/").lower())
+        payload["engine_managed"] = comfy_proc.alive()
     payload["ready"] = bool(online and payload["nodes_ready"] and not missing)
     return jsonify(payload)
 
@@ -279,6 +295,19 @@ def api_setup_state():
     return jsonify(snap)
 
 
+def _refresh_schema_when_up() -> None:
+    """After a (re)start, drop the cached schema the moment the engine
+    answers — otherwise the fresh model scan hides behind the old cache
+    for up to two minutes."""
+    def wait():
+        if bootstrap.wait_for_comfy(cfg["comfy_url"], timeout=900):
+            try:
+                client.schema(force=True)
+            except Exception:
+                pass
+    threading.Thread(target=wait, daemon=True).start()
+
+
 @app.post("/api/comfy/start")
 def api_comfy_start():
     if comfy_online(cfg["comfy_url"]):
@@ -289,7 +318,37 @@ def api_comfy_start():
     comfy_proc.start(py, Path(cfg["comfy_dir"]),
                      int(cfg["comfy_url"].rsplit(":", 1)[-1]), progress,
                      cfg.get("lowvram", True))
+    _refresh_schema_when_up()
     return jsonify({"ok": True})
+
+
+@app.post("/api/comfy/restart")
+def api_comfy_restart():
+    """Stop and start the managed ComfyUI, so it rescans its model folders
+    and loads newly installed nodes — the two things only a restart does."""
+    if not comfy_proc.alive() and comfy_online(cfg["comfy_url"]):
+        return jsonify({"error": "This ComfyUI was not started by MiniMax "
+                        "Studio, so it cannot be restarted from here. Close "
+                        "it yourself, then press Start ComfyUI."}), 409
+    py = bootstrap.comfy_python(cfg)
+    if not cfg.get("comfy_dir") or not py:
+        return jsonify({"error": "Run setup first."}), 400
+    comfy_proc.stop()
+    comfy_proc.start(py, Path(cfg["comfy_dir"]),
+                     int(cfg["comfy_url"].rsplit(":", 1)[-1]), progress,
+                     cfg.get("lowvram", True))
+    _refresh_schema_when_up()
+    return jsonify({"ok": True})
+
+
+@app.get("/api/comfy/log")
+def api_comfy_log():
+    """The engine's own console — the visible cue that it is starting,
+    started, or telling you exactly what failed to import."""
+    n = min(max(int(request.args.get("n", 80)), 1), 400)
+    return jsonify({"lines": comfy_proc.tail(n),
+                    "running": comfy_proc.alive(),
+                    "online": comfy_online(cfg["comfy_url"])})
 
 
 @app.post("/api/config")

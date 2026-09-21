@@ -187,8 +187,12 @@ class ComfyClient:
         dit = self._pick(unets, p.get("dit", ""), ["minimax", "ref2va"]) or \
             self._pick(unets, "", ["minimax"])
         if not dit:
-            raise ComfyError("No MiniMax H3 model in ComfyUI/models/"
-                             "diffusion_models. Download it on the Models page.")
+            raise ComfyError(
+                "ComfyUI's model list has no MiniMax H3 DiT. If the file is "
+                "already on disk, restart ComfyUI from the Engine page — it "
+                "scans its model folders once, at startup, so weights that "
+                "arrived later are invisible until then. Otherwise download "
+                "it on the Models page.")
         clip = self._pick(clips, p.get("clip", ""), ["qwen3vl"]) or \
             (clips[0] if clips else "")
         if not clip:

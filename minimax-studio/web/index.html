@@ -523,8 +523,15 @@
           <button class="btn" id="btnRecheck">Recheck</button>
           <button class="btn go" id="btnInstallAll">Install everything missing</button>
           <button class="btn" id="btnStartEngine">Start ComfyUI</button>
+          <button class="btn" id="btnRestartEngine">Restart ComfyUI</button>
           <button class="btn" id="btnReRun">Run setup again</button>
         </div>
+      </div>
+      <div class="panel">
+        <h2>Engine console</h2>
+        <p class="sub" id="engine-state">Checking…</p>
+        <div class="log" id="engine-log">Nothing yet — start ComfyUI and its
+          output lands here.</div>
       </div>
       <div class="panel">
         <h2>Preflight</h2>
@@ -847,7 +854,7 @@ function show(view) {
   closePops();
   $("mainCol").scrollTop = 0;
   if (view === "models") { loadHf(); loadLocal(); pollTasks(); }
-  if (view === "engine") { loadDeps(); loadPreflight(); pollTasks(); }
+  if (view === "engine") { loadDeps(); loadPreflight(); pollTasks(); pollEngineLog(); }
   if (view === "library") renderLib();
   if (view === "home") renderHome();
   if (view === "board") renderBoard();
@@ -1614,9 +1621,66 @@ async function installAllMissing() {
 }
 async function startEngine() {
   try {
-    await api("/api/comfy/start", { method: "POST" });
-    toast("Starting ComfyUI. The first start is slow.");
+    var r = await api("/api/comfy/start", { method: "POST" });
+    if (r.already) {
+      toast("ComfyUI is already running. If it cannot see new weights or "
+            + "nodes, press Restart ComfyUI instead.");
+    } else {
+      toast("Starting ComfyUI — watch the Engine console below. The first "
+            + "start is slow.");
+      show("engine");
+    }
   } catch (e) { toast(e.message, true); }
+}
+async function restartEngine() {
+  var b = $("btnRestartEngine");
+  b.disabled = true;
+  try {
+    await api("/api/comfy/restart", { method: "POST" });
+    toast("Restarting ComfyUI — it rescans its model folders and loads new "
+          + "nodes now. Watch the console below.");
+    show("engine");
+  } catch (e) { toast(e.message, true); }
+  finally { b.disabled = false; }
+}
+
+/* The engine's own console, polled while the Engine page is open. This is
+   the visible cue that it is starting, up, or saying what broke. */
+var engineLogTimer = null;
+async function pollEngineLog() {
+  clearTimeout(engineLogTimer);
+  if (S.view !== "engine") return;
+  var d;
+  try { d = await api("/api/comfy/log?n=120"); }
+  catch (e) { engineLogTimer = setTimeout(pollEngineLog, 4000); return; }
+  var log = $("engine-log");
+  var text = (d.lines || []).join("\n");
+  if (text && log.textContent !== text) {
+    var bottom = log.scrollTop + log.clientHeight >= log.scrollHeight - 30;
+    log.textContent = text;
+    if (bottom) log.scrollTop = log.scrollHeight;
+  }
+  var st = S.status || {};
+  var state;
+  if (st.stale_models && d.online) {
+    state = "⚠ The weights are on disk, but this ComfyUI started before "
+          + "they landed and has not rescanned. Press Restart ComfyUI.";
+  } else if (st.engine_mismatch && d.online) {
+    state = "⚠ A different ComfyUI is answering at " +
+      ((st.config || {}).comfy_url || "this address") +
+      (st.engine_argv ? " (" + st.engine_argv + ")" : "") +
+      ". Close it, or point Settings at the folder it runs from.";
+  } else if (d.running) {
+    state = d.online ? "Running — started by MiniMax Studio."
+                     : "Starting… the first start is slow.";
+  } else if (d.online) {
+    state = "Online, but started outside MiniMax Studio — Restart cannot "
+          + "reach it from here.";
+  } else {
+    state = "Offline. Press Start ComfyUI.";
+  }
+  $("engine-state").textContent = state;
+  engineLogTimer = setTimeout(pollEngineLog, 2500);
 }
 var taskTimer = null;
 async function pollTasks() {
@@ -1945,9 +2009,12 @@ async function refreshStatus() {
   try { st = await api("/api/status"); } catch (e) { return; }
   S.status = st;
   var pill = $("enginePill");
-  pill.classList.toggle("on", !!st.ready);
+  var stale = !!(st.stale_models && st.comfy_online);
+  pill.classList.toggle("on", !!st.ready && !stale);
   pill.classList.toggle("off", !st.comfy_online);
-  pill.querySelector("span").textContent = st.ready ? "Engine ready"
+  pill.querySelector("span").textContent =
+    stale ? "Restart the engine"
+    : st.ready ? "Engine ready"
     : !st.comfy_online ? "Engine offline"
     : !st.nodes_ready ? "Nodes not loaded"
     : st.missing_models.length ? "Weights missing" : "Engine loading";
@@ -2121,6 +2188,7 @@ function wire() {
   $("btnPlayBoard").addEventListener("click", playBoard);
 
   $("btnRecheck").addEventListener("click", function () { loadDeps(); refreshStatus(); });
+  $("btnRestartEngine").addEventListener("click", restartEngine);
   $("btnPreflight").addEventListener("click", loadPreflight);
   $("btnInstallAll").addEventListener("click", installAllMissing);
   $("btnStartEngine").addEventListener("click", startEngine);

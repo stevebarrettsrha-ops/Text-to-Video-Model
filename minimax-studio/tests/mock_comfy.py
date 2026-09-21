@@ -13,6 +13,11 @@ Knobs, all environment variables:
   MOCK_FAIL_AFTER         if set, every render ends in a CUDA out-of-memory
   MOCK_OMIT               comma-separated node classes to pretend not to have
   MOCK_NO_UPSCALER_MODEL  serve an empty model list on the latent upscaler
+  MOCK_BLANK_UNETS        serve an empty UNETLoader list for the first N
+                          /object_info calls — a ComfyUI that started before
+                          the weights landed and has not rescanned
+  MOCK_COMFY_ROOT         the install dir /system_stats claims via argv
+                          (default none: no argv, like wrappers that hide it)
 """
 import base64
 import hashlib
@@ -34,6 +39,8 @@ if os.environ.get("MOCK_NO_UPSCALER_MODEL") and \
         "model_name"][0] = []
 
 DELAY = float(os.environ.get("MOCK_DELAY", "1"))
+BLANK_UNETS = int(os.environ.get("MOCK_BLANK_UNETS", "0"))
+OBJECT_INFO_CALLS = 0
 
 HISTORY: dict = {}
 QUEUE_PENDING: list = []
@@ -58,13 +65,21 @@ TEST_VIDEO: list = []       # [bytes] once a test has posted one
 
 def _object_info():
     """The schema, with everything uploaded so far visible to LoadImage and
-    LoadVideo — the real server rescans its input folder the same way."""
+    LoadVideo — the real server rescans its input folder the same way. The
+    first MOCK_BLANK_UNETS calls hide the diffusion models, reproducing a
+    ComfyUI that started before the weights landed: the real one scans its
+    model folders once, at startup, and only a restart rescans them."""
+    global OBJECT_INFO_CALLS
     out = json.loads(json.dumps(OBJECT_INFO))
     with LOCK:
         names = list(UPLOADS)
+        OBJECT_INFO_CALLS += 1
+        withhold = OBJECT_INFO_CALLS <= BLANK_UNETS
     for cls, key in (("LoadImage", "image"), ("LoadVideo", "file")):
         if cls in out:
             out[cls]["input"]["required"][key][0] += names
+    if withhold and "UNETLoader" in out:
+        out["UNETLoader"]["input"]["required"]["unet_name"][0] = []
     return out
 
 
@@ -221,7 +236,11 @@ class H(BaseHTTPRequestHandler):
         if p == "/object_info":
             self._send(200, _object_info())
         elif p == "/system_stats":
-            self._send(200, {"system": {"comfyui_version": "0.3.75"}})
+            system = {"comfyui_version": "0.3.75"}
+            root = os.environ.get("MOCK_COMFY_ROOT", "")
+            if root:
+                system["argv"] = [f"{root}/main.py"]
+            self._send(200, {"system": system})
         elif p.startswith("/history/"):
             pid = p.rsplit("/", 1)[-1]
             with LOCK:

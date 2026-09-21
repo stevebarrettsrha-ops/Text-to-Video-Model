@@ -724,6 +724,17 @@ def comfy_online(url: str) -> bool:
         return False
 
 
+def comfy_stats(url: str) -> dict | None:
+    """What is actually answering on the address — argv says which install."""
+    try:
+        r = requests.get(f"{url}/system_stats", timeout=3)
+        if r.status_code == 200:
+            return r.json().get("system") or {}
+    except Exception:
+        pass
+    return None
+
+
 def wait_for_comfy(url: str, timeout: int = 900, on_wait=None) -> bool:
     """Poll until ComfyUI answers. `on_wait(elapsed, timeout)` runs each pass —
     there is no percentage to give here, only how long it has been waiting."""

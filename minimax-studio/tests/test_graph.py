@@ -109,6 +109,27 @@ def run(slow: bool = False) -> Suite:
         s.check("without a voice, no audio loader is added",
                 not nodes_of(built["prompt"], "LoadAudio"))
 
+        # -- motion / video reference ---------------------------------------
+        class FakeMotion:
+            filename = "dance.mp4"
+            stream = b"mp4"
+            mimetype = "video/mp4"
+
+        motion = client.upload(FakeMotion())
+        built = client.build({"prompt": "follow this choreography",
+                              "ref_video": motion})
+        g = built["prompt"]
+        client.queue(g)
+        s.check("ComfyUI accepts a clip with a motion video", True)
+        load_video = nodes_of(g, "LoadVideo")
+        components = nodes_of(g, "GetVideoComponents")
+        r2v = nodes_of(g, "MiniMaxH3ReferenceToVideo")[0][1]["inputs"]
+        s.check("the motion reference is decoded to frames",
+                bool(load_video) and bool(components)
+                and components[0][1]["inputs"]["video"] == [load_video[0][0], 0])
+        s.check("video frames land on ref_videos.ref_video_0",
+                r2v.get("ref_videos.ref_video_0") == [components[0][0], 0])
+
         # -- tiled decode -----------------------------------------------------
         built = client.build({"prompt": "x", "tiled_decode": True})
         s.check("tiled decode swaps the video decode node",

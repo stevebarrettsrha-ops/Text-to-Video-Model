@@ -378,6 +378,7 @@
     <section data-page="home">
       <div class="home">
         <h1 class="big">What happens in the shot?</h1>
+        <p class="sub" style="margin:-20px 0 18px">Write a prompt and generate directly for text-to-video. References are optional.</p>
         <div class="bar">
           <textarea id="homePrompt" rows="1" spellcheck="false"
             placeholder="A man walks to the window and looks out at the rain, then turns to camera and speaks…"></textarea>
@@ -404,8 +405,11 @@
       <div class="barwrap">
         <div class="bar">
           <textarea id="description" rows="1" spellcheck="false"
-            placeholder="Describe your image…"></textarea>
+            placeholder="Describe your video, dialogue, camera and sound…"></textarea>
           <div class="barrow">
+            <span class="pill on" id="modePill" title="The active H3 generation mode">
+              <svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h12M4 18h8"/></svg>
+              <span id="modeLabel">Text to video</span></span>
             <div class="chips" id="segRatio">
               <button class="on" data-v="16:9">16:9</button>
               <button data-v="9:16">9:16</button>
@@ -422,6 +426,10 @@
               <svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/></svg>
               <span id="refsLabel">References</span></button>
             <input type="file" id="refFile" accept="image/*" multiple hidden>
+            <button class="pill" id="btnMotion" title="Use a video's motion and composition as guidance">
+              <svg viewBox="0 0 24 24"><rect x="3" y="5" width="14" height="14" rx="2"/><path d="m17 10 4-2v8l-4-2z"/></svg>
+              <span id="motionLabel">Motion video</span></button>
+            <input type="file" id="motionFile" accept="video/*" hidden>
             <button class="pill" id="btnVoice" title="A reference voice — H3 speaks with it">
               <svg viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3M8 21h8"/></svg>
               <span id="voiceLabel">Voice</span></button>
@@ -470,7 +478,7 @@
       <div class="feed">
         <div class="feedhead" style="margin-top:22px">Library<span class="grow"></span>
           <input type="text" id="libSearch" style="max-width:250px"
-                 placeholder="Search your images"></div>
+                 placeholder="Search your videos"></div>
         <div class="masonry" id="libGrid"></div>
       </div>
     </section>
@@ -613,7 +621,7 @@
 <div class="lightbox" id="lightbox" hidden>
   <div class="stage"><video id="lbVideo" controls loop playsinline></video></div>
   <div class="side">
-    <h3 id="lbTitle">Image</h3>
+    <h3 id="lbTitle">Video</h3>
     <div class="pr" id="lbPrompt"></div>
     <div id="lbMeta"></div>
     <div class="lbacts">
@@ -703,6 +711,7 @@
 /* ========================= state ========================= */
 var S = {
   view: "home", ratio: "16:9", mp: 0.2, seconds: 6, refs: [], voice: null,
+  motion: null,
   status: null, jobs: [], images: [], libFilter: "", batch: 1,
   setupCursor: 0, taskId: null, taskCursor: 0, setupSeen: false, lightbox: null,
   board: [], boardJobs: {}
@@ -775,7 +784,7 @@ function syncSize() {
 /* ========================= draft ========================= */
 function saveDraft() {
   store("mm.draft", { prompt: $("description").value, ratio: S.ratio, mp: S.mp,
-    seconds: S.seconds, refs: S.refs, voice: S.voice,
+    seconds: S.seconds, refs: S.refs, voice: S.voice, motion: S.motion,
     steps: $("steps-sl").value,
     shift: $("shift-sl").value, shift2: $("shift2-sl").value });
 }
@@ -788,6 +797,7 @@ function loadDraft() {
   S.seconds = Number(d.seconds || 6);
   S.refs = d.refs || [];
   S.voice = d.voice || null;
+  S.motion = d.motion || null;
   $("mp-sl").value = S.mp;
   $("sec-sl").value = S.seconds;
   if (d.steps) { $("steps-sl").value = d.steps; $("stepsVal").textContent = d.steps; }
@@ -806,7 +816,7 @@ function loadDraft() {
 /* ========================= reference images ========================= */
 function renderRefs() {
   var box = $("refsRow");
-  box.hidden = !S.refs.length;
+  box.hidden = !S.refs.length && !S.motion;
   box.innerHTML = "";
   S.refs.forEach(function (r, i) {
     var el = document.createElement("div");
@@ -827,6 +837,19 @@ function renderRefs() {
     el.appendChild(x);
     box.appendChild(el);
   });
+  if (S.motion) {
+    var motion = document.createElement("div");
+    motion.className = "rescard";
+    motion.style.position = "relative";
+    motion.innerHTML = '<div style="aspect-ratio:1;display:grid;place-items:center;' +
+      'background:var(--raised);border:1px solid var(--line);border-radius:10px;' +
+      'font-size:11px;color:var(--muted);padding:8px;text-align:center">' +
+      'Motion<br>' + esc(S.motion.label) + '</div>';
+    var mx = mkBtn("×", function () { S.motion = null; renderRefs(); saveDraft(); });
+    mx.style.cssText = "position:absolute;top:6px;right:6px;padding:2px 8px";
+    motion.appendChild(mx);
+    box.appendChild(motion);
+  }
   $("refsLabel").textContent = S.refs.length
     ? "References · " + S.refs.length : "References";
   $("btnRefs").classList.toggle("on", S.refs.length > 0);
@@ -836,6 +859,18 @@ function renderRefs() {
   $("btnVoice").title = S.voice
     ? "Speaking with " + S.voice.label + " — press to remove"
     : "A reference voice — H3 speaks with it";
+  $("motionLabel").textContent = S.motion
+    ? "Motion · " + S.motion.label : "Motion video";
+  $("btnMotion").classList.toggle("on", !!S.motion);
+  syncMode();
+}
+function syncMode() {
+  var mode = S.motion && S.refs.length ? "Text + image + motion"
+    : S.motion ? "Video reference"
+    : S.refs.length ? "Image reference"
+    : "Text to video";
+  if (S.voice) mode += " + voice";
+  $("modeLabel").textContent = mode;
 }
 async function setVoice(input) {
   var file = (input.files || [])[0];
@@ -867,6 +902,19 @@ async function addRefs(input) {
   input.value = "";
   renderRefs();
   saveDraft();
+}
+async function setMotion(input) {
+  var file = (input.files || [])[0];
+  input.value = "";
+  if (!file) return;
+  var fd = new FormData();
+  fd.append("file", file);
+  try {
+    var r = await api("/api/upload", { method: "POST", body: fd });
+    S.motion = { name: r.name, label: file.name.slice(0, 24) };
+    renderRefs(); saveDraft();
+    toast("Motion video loaded — H3 will follow its movement and composition.");
+  } catch (e) { toast(e.message, true); }
 }
 
 /* ========================= views ========================= */
@@ -929,7 +977,8 @@ function collectBase() {
     seed: $("seed").value.trim() ? Number($("seed").value.trim()) : null,
     dit: $("unet-sel").value,
     // the reference voice rides with every shot, board cards included
-    voice: S.voice ? S.voice.name : null
+    voice: S.voice ? S.voice.name : null,
+    ref_video: S.motion ? S.motion.name : null
   };
 }
 function collect() {
@@ -943,9 +992,9 @@ function collect() {
 async function generate() {
   if (!S.status || !S.status.ready) { openSetup(); return; }
   var p = collect();
-  if (!p.prompt && !p.refs.length) {
+  if (!p.prompt && !p.refs.length && !p.ref_video) {
     show("create");
-    toast("Describe the shot, or add a reference image.", true);
+    toast("Describe the shot, or add an image or motion video.", true);
     $("description").focus();
     return;
   }
@@ -1070,7 +1119,7 @@ function renderFeed() {
   running.forEach(function (j) { box.appendChild(skeleton(j)); });
   if (!S.images.length && !running.length) {
     box.innerHTML = '<div class="empty"><b>Nothing here yet</b>' +
-      "Describe an image above and press Generate.</div>";
+      "Describe a video above and press Generate.</div>";
     return;
   }
   S.images.slice(0, 60).forEach(function (im) { box.appendChild(tile(im)); });
@@ -1088,7 +1137,7 @@ function renderLib() {
   box.innerHTML = "";
   if (!list.length) {
     box.innerHTML = '<div class="empty"><b>Nothing here yet</b>' +
-      "Images you make land here.</div>";
+      "Videos you make land here.</div>";
     return;
   }
   list.forEach(function (im) { box.appendChild(tile(im)); });
@@ -1099,7 +1148,7 @@ function renderHome() {
   box.innerHTML = "";
   if (!S.images.length) {
     box.innerHTML = '<div class="empty"><b>Nothing yet</b>' +
-      "Describe an image above and press Generate.</div>";
+      "Describe a video above and press Generate.</div>";
     return;
   }
   S.images.slice(0, 12).forEach(function (im) { box.appendChild(tile(im)); });
@@ -1111,6 +1160,12 @@ async function loadImages() {
 }
 function reuse(im) {
   $("description").value = im.prompt || "";
+  S.motion = im.ref_video
+    ? { name: im.ref_video, label: im.ref_video.split(/[\\/]/).pop() }
+    : null;
+  S.voice = im.voice
+    ? { name: im.voice, label: im.voice.split(/[\\/]/).pop() }
+    : null;
   if (im.aspect) {
     S.ratio = im.aspect;
     $("segRatio").querySelectorAll("button").forEach(function (b) {
@@ -1131,8 +1186,9 @@ function reuse(im) {
   grow($("description"));
   syncSize();
   saveDraft();
-  toast("Settings loaded. Reference images are not restored — add them again "
-        + "for the same faces.");
+  renderRefs();
+  toast("Settings loaded. Motion and voice references were restored. Add the "
+        + "reference images again for the same faces.");
 }
 async function removeImage(im) {
   if (!confirm("Delete this clip?")) return;
@@ -1170,6 +1226,8 @@ function openLightbox(im, inSeq) {
               ["Model", short(im.model) || "—"]];
   if (im.lora) rows.push(["Turbo LoRA", short(im.lora)]);
   if ((im.refs || []).length) rows.push(["References", im.refs.length]);
+  if (im.ref_video) rows.push(["Motion video", short(im.ref_video)]);
+  if (im.voice) rows.push(["Reference voice", short(im.voice)]);
   if (im.upscaled) rows.push(["Latent upscale", "yes"]);
   if (im.kind === "rtx") rows.push(["RTX upscale", "yes"]);
   if (im.note) rows.push(["Note", im.note]);
@@ -2105,7 +2163,7 @@ function wire() {
   $("enginePill").addEventListener("click", function () { show("engine"); });
 
   $("description").addEventListener("input", function (e) {
-    grow(e.target); saveDraft(); });
+    grow(e.target); syncMode(); saveDraft(); });
   $("homePrompt").addEventListener("input", function (e) { grow(e.target); });
 
 
@@ -2138,6 +2196,16 @@ function wire() {
   });
   $("btnRefs").addEventListener("click", function () { $("refFile").click(); });
   $("refFile").addEventListener("change", function (e) { addRefs(e.target); });
+  $("btnMotion").addEventListener("click", function () {
+    if (S.motion) {
+      S.motion = null; renderRefs(); saveDraft(); toast("Motion video removed.");
+    } else {
+      $("motionFile").click();
+    }
+  });
+  $("motionFile").addEventListener("change", function (e) {
+    setMotion(e.target);
+  });
   $("btnVoice").addEventListener("click", function () {
     if (S.voice) {
       S.voice = null;

@@ -64,12 +64,28 @@ Low-VRAM mode is on by default and launches ComfyUI with `--lowvram
 
 ## Making a clip
 
-The prompt bar holds everything: the shot description, aspect, length, up to
-three **reference images** (H3 keeps those faces and outfits), a **reference
-voice** (an audio file — H3 generates the clip's speech in that voice; press
-the pill again to remove it; it rides with every shot, board cards included),
-and Settings for the rest. None of it is required: a prompt alone is plain
-text-to-video.
+### Text to video
+
+Type a shot description and press **Generate**. No image, video, or voice
+reference is required: with only the prompt filled, the mode badge reads
+**Text to video** and H3 builds the clip—including its generated audio—from
+the text. The Home-page prompt runs through this same prompt-only path.
+
+### Optional reference conditioning
+
+The prompt bar exposes all four inputs supported by H3's Ref2VA model: a text
+description for **text-to-video**, up to three **reference images** for subject
+and appearance consistency, one **motion video** whose frames guide movement
+and composition, and a **reference voice** whose speaker H3 follows while
+generating the clip's audio. These can be combined—for example, a character
+image plus a choreography clip plus a voice—or used individually. Press an
+active Motion or Voice pill again to remove it. Settings holds aspect, length,
+quality, sampling, and upscale controls.
+
+The motion-video path is a true temporal reference, not a thumbnail: the app
+loads the uploaded clip in ComfyUI, extracts its frame sequence, and supplies
+that sequence to H3's `ref_videos.ref_video_0` input. A prompt alone remains
+plain text-to-video, while an image alone or video alone can also start a job.
 
 Two numbers are computed for you, the same way the workflow's helper nodes did
 it:

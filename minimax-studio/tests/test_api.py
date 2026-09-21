@@ -50,6 +50,25 @@ def run(slow: bool = False) -> Suite:
             r = requests.post(app.url + "/api/generate", json={}, timeout=10)
             s.check("an empty ask is a 400 with advice",
                     r.status_code == 400 and "reference" in r.json()["error"])
+            r = requests.post(app.url + "/api/generate",
+                              json={"prompt": "x", "runs": "many"}, timeout=10)
+            s.check("bad numeric generation settings are a useful 400",
+                    r.status_code == 400 and "numbers" in r.json()["error"])
+            r = requests.post(app.url + "/api/generate",
+                              json={"prompt": "x", "seconds": 31}, timeout=10)
+            s.check("generation length is bounded before a job starts",
+                    r.status_code == 400 and "30 seconds" in r.json()["error"])
+            r = requests.post(app.url + "/api/jobs/not-a-job/cancel", timeout=10)
+            s.check("cancelling an unknown job cannot interrupt real work",
+                    r.status_code == 404)
+            r = requests.post(app.url + "/api/generate",
+                              json={"ref_video": "example.mp4"}, timeout=30)
+            s.check("a motion video can generate without a text prompt",
+                    r.ok and len(r.json()["jobs"]) == 1)
+            finish_jobs(app.url)
+            requests.delete(app.url + "/api/clip/" +
+                            requests.get(app.url + "/api/clips", timeout=10)
+                            .json()[0]["id"], timeout=10)
 
             # -- a clip, end to end -------------------------------------------
             r = requests.post(app.url + "/api/generate",
@@ -94,6 +113,10 @@ def run(slow: bool = False) -> Suite:
                               timeout=10)
             s.equal("upscaling a clip that does not exist is a 404",
                     r.status_code, 404)
+            r = requests.post(f"{app.url}/api/upscale/{up['id']}",
+                              json={"scale": "huge"}, timeout=10)
+            s.check("a bad upscale factor is a useful 400",
+                    r.status_code == 400 and "whole number" in r.json()["error"])
 
             # -- delete ----------------------------------------------------------
             gone = requests.delete(f"{app.url}/api/clip/{clip['id']}",
@@ -168,6 +191,12 @@ def run(slow: bool = False) -> Suite:
             s.check("a bad save does not clobber the stored board",
                     len(requests.get(app.url + "/api/board",
                                      timeout=10).json()) == 2)
+            r = requests.post(app.url + "/api/board",
+                              json=[{"prompt": "safe", "seconds": "oops"}],
+                              timeout=10)
+            repaired = requests.get(app.url + "/api/board", timeout=10).json()
+            s.check("a malformed shot length is repaired, not a server error",
+                    r.ok and repaired[0]["seconds"] == 6)
 
             # -- setup, in the connect-to-my-own-ComfyUI mode -------------------
             r = requests.post(app.url + "/api/setup/start",

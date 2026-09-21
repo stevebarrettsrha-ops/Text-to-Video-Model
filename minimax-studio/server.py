@@ -7,6 +7,7 @@ Run:  python server.py        (opens http://127.0.0.1:7802)
 from __future__ import annotations
 
 import json
+import math
 import mimetypes
 import os
 import threading
@@ -54,23 +55,43 @@ ws_progress: dict[str, dict] = {}
 # --------------------------------------------------------------------------- #
 def read_gallery() -> list[dict]:
     with gallery_lock:
-        if not GALLERY_PATH.exists():
-            return []
-        try:
-            return json.loads(GALLERY_PATH.read_text(encoding="utf-8"))
-        except Exception:
-            return []
+        return _read_gallery_unlocked()
+
+
+def _read_gallery_unlocked() -> list[dict]:
+    """Read the gallery while the caller owns ``gallery_lock``.
+
+    Treat a damaged or manually edited file as empty rather than allowing a
+    dict/string to leak into endpoints that expect a list of clip records.
+    """
+    if not GALLERY_PATH.exists():
+        return []
+    try:
+        value = json.loads(GALLERY_PATH.read_text(encoding="utf-8"))
+        return value if isinstance(value, list) else []
+    except (OSError, json.JSONDecodeError):
+        return []
+
+
+def _write_gallery_unlocked(items: list[dict]) -> None:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    # replace() prevents a crash in the middle of a write from leaving half a
+    # JSON document behind.
+    temporary = GALLERY_PATH.with_suffix(".json.tmp")
+    temporary.write_text(json.dumps(items, indent=2), encoding="utf-8")
+    temporary.replace(GALLERY_PATH)
 
 
 def write_gallery(items: list[dict]) -> None:
     with gallery_lock:
-        DATA_DIR.mkdir(parents=True, exist_ok=True)
-        GALLERY_PATH.write_text(json.dumps(items, indent=2), encoding="utf-8")
+        _write_gallery_unlocked(items)
 
 
 def add_images(items: list[dict]) -> None:
-    gallery = read_gallery()
-    write_gallery(items + gallery)
+    # A batch can launch four render threads. Keep the read/modify/write under
+    # one lock or two jobs finishing together can silently discard a clip.
+    with gallery_lock:
+        _write_gallery_unlocked(items + _read_gallery_unlocked())
 
 
 def title_from(p: dict) -> str:
@@ -180,6 +201,8 @@ def run_job(job_id: str, params: dict) -> None:
                 "title": params.get("title") or title_from(params),
                 "prompt": params.get("prompt", ""),
                 "refs": params.get("refs") or [],
+                "ref_video": params.get("ref_video") or "",
+                "voice": params.get("voice") or "",
                 "width": built.get("width") or params.get("width"), "height": built.get("height") or params.get("height"),
                 "length": built.get("length") or params.get("length"), "fps": built.get("fps") or params.get("fps"),
                 "seconds": built.get("seconds") or params.get("seconds"),
@@ -631,13 +654,36 @@ def api_hf_delete():
 @app.post("/api/generate")
 def api_generate():
     params = request.get_json(silent=True) or {}
-    if not (params.get("prompt") or "").strip() and not params.get("refs"):
-        return jsonify({"error": "Describe the shot, or add a reference "
-                                 "image."}), 400
+    if not isinstance(params, dict):
+        return jsonify({"error": "Send generation settings as an object."}), 400
+    prompt, refs = params.get("prompt", ""), params.get("refs", [])
+    ref_video = params.get("ref_video") or ""
+    if (not isinstance(prompt, str) or not isinstance(refs, list)
+            or not isinstance(ref_video, str)):
+        return jsonify({"error": "Prompt must be text and references must be "
+                                 "a list."}), 400
+    if not prompt.strip() and not refs and not ref_video:
+        return jsonify({"error": "Describe the shot, or add an image or video "
+                                 "reference."}), 400
+    try:
+        runs = int(params.get("runs") or 1)
+        seconds = float(params.get("seconds") or 6)
+        megapixels = float(params.get("megapixels") or 0.2)
+        fps = int(params.get("fps") or 24)
+    except (TypeError, ValueError):
+        return jsonify({"error": "Runs, length, FPS and megapixels must be "
+                                 "numbers."}), 400
+    if not 1 <= runs <= 4:
+        return jsonify({"error": "Runs must be between 1 and 4."}), 400
+    if not math.isfinite(seconds) or not 0.5 <= seconds <= 30:
+        return jsonify({"error": "Length must be between 0.5 and 30 seconds."}), 400
+    if not math.isfinite(megapixels) or not 0.05 <= megapixels <= 2:
+        return jsonify({"error": "Megapixels must be between 0.05 and 2."}), 400
+    if not 1 <= fps <= 120:
+        return jsonify({"error": "FPS must be between 1 and 120."}), 400
     if not comfy_online(cfg["comfy_url"]):
         return jsonify({"error": "ComfyUI is not running. Start it from the "
                                  "Engine page."}), 503
-    runs = max(1, min(int(params.get("runs") or 1), 4))
     created = []
     for _ in range(runs):
         job_id = uuid.uuid4().hex[:12]
@@ -663,8 +709,12 @@ def api_jobs():
 @app.post("/api/jobs/<job_id>/cancel")
 def api_job_cancel(job_id: str):
     with jobs_lock:
-        if job_id in jobs:
-            jobs[job_id]["cancelled"] = True
+        job = jobs.get(job_id)
+        if not job:
+            return jsonify({"error": "No such job."}), 404
+        if job["status"] != "running":
+            return jsonify({"error": "That job has already finished."}), 409
+        job["cancelled"] = True
     client.interrupt()
     return jsonify({"ok": True})
 
@@ -693,6 +743,12 @@ def api_upscale(clip_id: str):
     if not comfy_online(cfg["comfy_url"]):
         return jsonify({"error": "ComfyUI is not running."}), 503
     try:
+        scale = int(b.get("scale", 2))
+    except (TypeError, ValueError):
+        return jsonify({"error": "Scale must be a whole number."}), 400
+    if scale not in (2, 4):
+        return jsonify({"error": "Scale must be 2 or 4."}), 400
+    try:
         with open(path, "rb") as fh:
             class Up:
                 filename = clip["file"]
@@ -702,7 +758,6 @@ def api_upscale(clip_id: str):
     except Exception as exc:  # noqa: BLE001
         return jsonify({"error": f"Could not hand the clip to ComfyUI: {exc}"}), 500
     job_id = uuid.uuid4().hex[:12]
-    scale = int(b.get("scale", 2))
     params = {"kind": "rtx", "video": name, "scale": scale,
               "quality": b.get("quality", "ULTRA"),
               "title": clip["title"] + f" ×{scale}",
@@ -751,14 +806,17 @@ def api_clip(image_id: str):
 
 @app.delete("/api/clip/<image_id>")
 def api_clip_delete(image_id: str):
-    items = read_gallery()
-    for item in items:
-        if item["id"] == image_id:
-            try:
-                (CLIPS_DIR / item["file"]).unlink(missing_ok=True)
-            except OSError:
-                pass
-    write_gallery([i for i in items if i["id"] != image_id])
+    # Serialize deletion with render completion so a stale snapshot cannot
+    # erase a clip that was added while the file was being removed.
+    with gallery_lock:
+        items = _read_gallery_unlocked()
+        for item in items:
+            if item.get("id") == image_id:
+                try:
+                    (CLIPS_DIR / item["file"]).unlink(missing_ok=True)
+                except (KeyError, OSError):
+                    pass
+        _write_gallery_unlocked([i for i in items if i.get("id") != image_id])
     return jsonify({"ok": True})
 
 
@@ -768,9 +826,15 @@ def api_clip_delete(image_id: str):
 def _clean_shot(shot) -> dict | None:
     if not isinstance(shot, dict):
         return None
+    try:
+        seconds = float(shot.get("seconds") or 6)
+    except (TypeError, ValueError):
+        seconds = 6.0
+    if not math.isfinite(seconds):
+        seconds = 6.0
     return {"id": str(shot.get("id") or uuid.uuid4().hex[:12])[:32],
             "prompt": str(shot.get("prompt") or "")[:4000],
-            "seconds": max(0.5, min(float(shot.get("seconds") or 6), 30)),
+            "seconds": max(0.5, min(seconds, 30)),
             "chain": bool(shot.get("chain", True)),
             "clip": str(shot.get("clip") or "")[:32]}
 

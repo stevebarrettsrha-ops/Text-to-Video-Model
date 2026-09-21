@@ -666,6 +666,14 @@ class ComfyProcess:
         self.lines: list[str] = []
         self._lock = threading.Lock()
 
+    def note(self, msg: str) -> None:
+        """An app-side line in the engine console — what the app is doing TO
+        the engine belongs next to what the engine itself says."""
+        with self._lock:
+            self.lines.append(f"[MiniMax Studio] {msg}")
+            if len(self.lines) > 2000:
+                del self.lines[:1000]
+
     def alive(self) -> bool:
         return self.proc is not None and self.proc.poll() is None
 
@@ -810,25 +818,35 @@ def pid_cmdline(pid: int) -> str:
         return ""
 
 
-def kill_pid(pid: int) -> None:
-    """Stop a process: politely first, firmly if it lingers."""
+def kill_pid(pid: int) -> str:
+    """Stop a process: politely first, firmly if it lingers. Returns what the
+    system said about it, so a refusal (access denied, already gone) can be
+    shown instead of guessed at."""
     if platform.system() == "Windows":
-        _run(["taskkill", "/PID", str(pid), "/T", "/F"], timeout=30)
-        return
+        try:
+            out = _run(["taskkill", "/PID", str(pid), "/T", "/F"], timeout=30)
+            return (out.stdout or out.stderr or "").strip()
+        except Exception as exc:  # noqa: BLE001
+            return str(exc)
     try:
         os.kill(pid, signal.SIGTERM)
     except ProcessLookupError:
-        return
+        return "already gone"
+    except PermissionError:
+        return "access denied"
     for _ in range(25):
         time.sleep(0.2)
         try:
             os.kill(pid, 0)
         except ProcessLookupError:
-            return
+            return "stopped"
     try:
         os.kill(pid, signal.SIGKILL)
     except ProcessLookupError:
-        pass
+        return "stopped"
+    except PermissionError:
+        return "access denied"
+    return "sent SIGKILL"
 
 
 def comfy_stats(url: str) -> dict | None:

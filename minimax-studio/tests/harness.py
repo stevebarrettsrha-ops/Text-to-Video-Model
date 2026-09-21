@@ -175,6 +175,22 @@ def fake_install(root: Path, stale_first_boot: bool = False) -> Path:
     return install
 
 
+def supervised_comfy(delay: float = 1.0) -> Server:
+    """A mock engine under a supervisor that respawns it when killed —
+    ComfyUI Desktop and launcher scripts behave exactly like this."""
+    port = free_port()
+    script = Path(tempfile.mkstemp(suffix="_supervisor.py")[1])
+    script.write_text(textwrap.dedent(f"""\
+        import subprocess, sys, time
+        while True:
+            p = subprocess.Popen([sys.executable, {str(MOCK)!r}, sys.argv[1]])
+            p.wait()
+            time.sleep(0.3)
+    """))
+    return Server([sys.executable, str(script), str(port)], port,
+                  "/system_stats", env={"MOCK_DELAY": str(delay)})
+
+
 def hub() -> Server:
     """A stand-in huggingface.co, for the download paths."""
     port = free_port()

@@ -16,7 +16,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from harness import (Suite, Workspace, comfy, fake_install,  # noqa: E402
                      fake_weights, finish_jobs, free_port, hub, studio,
-                     wait_for)
+                     supervised_comfy, wait_for)
+
+
+def engine_state(app_url: str) -> dict:
+    return requests.get(app_url + "/api/status", timeout=10).json()
 
 
 def run(slow: bool = False) -> Suite:
@@ -303,6 +307,64 @@ def run(slow: bool = False) -> Suite:
                     wait_for(lambda: requests.get(
                         app.url + "/api/status", timeout=10)
                         .json()["comfy_online"], 45))
+
+    # -- launch starts the engine fully by itself -------------------------------
+    with Workspace() as ws:
+        install = fake_install(ws)
+        quiet = f"http://127.0.0.1:{free_port()}"
+        with studio(quiet, ws / "data", install / "models",
+                    comfy_dir=str(install), python=sys.executable,
+                    auto_start_comfy=True) as app:
+            s.check("a quiet port: launch boots a managed engine, no clicks",
+                    wait_for(lambda: (lambda x: x.get("comfy_online")
+                             and x.get("engine_managed"))(
+                                 engine_state(app.url)), 45))
+            st = engine_state(app.url)
+            s.check("and it comes up seeing the weights",
+                    st["ready"] and not st["stale_models"]
+                    and any("minimax" in u.lower() for u in st["unets"]))
+
+    # -- launch replaces a stale orphan by itself --------------------------------
+    with comfy(MOCK_BLANK_UNETS="999") as orphan, Workspace() as ws:
+        install = fake_install(ws)
+        with studio(orphan.url, ws / "data", install / "models",
+                    comfy_dir=str(install), python=sys.executable,
+                    auto_start_comfy=True, managed=True) as app:
+            s.check("a stale orphan on the port: launch replaces it by itself",
+                    wait_for(lambda: (lambda x: x.get("engine_managed")
+                             and x.get("comfy_online")
+                             and x.get("stale_models") is False)(
+                                 engine_state(app.url)), 60))
+            log = requests.get(app.url + "/api/comfy/log?n=200",
+                               timeout=10).json()
+            joined = "\n".join(log["lines"])
+            s.check("the engine console narrates the boot takeover",
+                    "Replacing it" in joined and "Stopping pid" in joined)
+
+    # -- launch adopts a healthy engine rather than killing it -------------------
+    with comfy() as healthy, Workspace() as ws:
+        install = fake_install(ws)
+        with studio(healthy.url, ws / "data", install / "models",
+                    comfy_dir=str(install), python=sys.executable,
+                    auto_start_comfy=True, managed=True) as app:
+            wait_for(lambda: "Adopting" in "\n".join(
+                requests.get(app.url + "/api/comfy/log?n=100", timeout=10)
+                .json()["lines"]), 30)
+            st = engine_state(app.url)
+            s.check("a healthy engine on the port is adopted, not killed",
+                    st["comfy_online"] and not st["engine_managed"]
+                    and healthy.proc.poll() is None)
+
+    # -- a supervised engine: takeover names the real obstacle -------------------
+    with supervised_comfy() as sup, Workspace() as ws:
+        install = fake_install(ws)
+        with studio(sup.url, ws / "data", install / "models",
+                    comfy_dir=str(install), python=sys.executable) as app:
+            r = requests.post(app.url + "/api/comfy/restart", timeout=180)
+            s.check("a respawning engine is diagnosed, not shrugged at",
+                    r.status_code == 409
+                    and "supervising" in r.json()["error"],
+                    str(r.json())[:110])
 
     # -- a different install answering the address ------------------------------
     with comfy(MOCK_COMFY_ROOT="/opt/somebody-elses/ComfyUI") as mock, \

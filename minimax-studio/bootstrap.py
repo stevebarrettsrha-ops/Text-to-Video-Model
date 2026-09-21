@@ -16,6 +16,7 @@ import os
 import platform
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import threading
@@ -722,6 +723,112 @@ def comfy_online(url: str) -> bool:
         return requests.get(f"{url}/system_stats", timeout=3).status_code == 200
     except Exception:
         return False
+
+
+def _pids_from_proc_net(port: int) -> list[int]:
+    """Linux, no tools needed: the socket inode from /proc/net/tcp*, then the
+    process whose fd table holds it."""
+    inodes = set()
+    for name in ("/proc/net/tcp", "/proc/net/tcp6"):
+        try:
+            lines = Path(name).read_text().splitlines()[1:]
+        except OSError:
+            continue
+        for line in lines:
+            parts = line.split()
+            if len(parts) < 10:
+                continue
+            local, state, inode = parts[1], parts[3], parts[9]
+            if state == "0A" and local.rsplit(":", 1)[-1] == f"{port:04X}":
+                inodes.add(inode)
+    pids = set()
+    if not inodes:
+        return []
+    for proc in Path("/proc").iterdir():
+        if not proc.name.isdigit():
+            continue
+        try:
+            for fd in (proc / "fd").iterdir():
+                try:
+                    target = os.readlink(fd)
+                except OSError:
+                    continue
+                if any(f"socket:[{i}]" == target for i in inodes):
+                    pids.add(int(proc.name))
+                    break
+        except OSError:
+            continue
+    return sorted(pids)
+
+
+def port_pids(port: int) -> list[int]:
+    """Whoever is listening on the port."""
+    if platform.system() == "Windows":
+        pids = set()
+        try:
+            out = _run(["netstat", "-ano", "-p", "TCP"], timeout=25).stdout
+        except Exception:
+            return []
+        for line in out.splitlines():
+            parts = line.split()
+            if len(parts) >= 5 and parts[0] == "TCP" \
+                    and parts[3] == "LISTENING" \
+                    and parts[1].rsplit(":", 1)[-1] == str(port):
+                try:
+                    pids.add(int(parts[4]))
+                except ValueError:
+                    pass
+        return sorted(pids)
+    found = _pids_from_proc_net(port)
+    if found:
+        return found
+    if shutil.which("lsof"):
+        try:
+            out = _run(["lsof", "-ti", f"tcp:{port}", "-sTCP:LISTEN"],
+                       timeout=25).stdout
+            return sorted({int(t) for t in out.split() if t.strip().isdigit()})
+        except Exception:
+            pass
+    return []
+
+
+def pid_cmdline(pid: int) -> str:
+    try:
+        if platform.system() == "Windows":
+            out = _run(["wmic", "process", "where", f"processid={pid}",
+                        "get", "commandline"], timeout=25).stdout
+            lines = [ln.strip() for ln in out.splitlines()
+                     if ln.strip() and "CommandLine" not in ln]
+            return lines[0] if lines else ""
+        cmd = Path(f"/proc/{pid}/cmdline")
+        if cmd.exists():
+            return cmd.read_bytes().replace(b"\0", b" ").decode(
+                "utf-8", "replace").strip()
+        return _run(["ps", "-p", str(pid), "-o", "command="],
+                    timeout=25).stdout.strip()
+    except Exception:
+        return ""
+
+
+def kill_pid(pid: int) -> None:
+    """Stop a process: politely first, firmly if it lingers."""
+    if platform.system() == "Windows":
+        _run(["taskkill", "/PID", str(pid), "/T", "/F"], timeout=30)
+        return
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    for _ in range(25):
+        time.sleep(0.2)
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
 
 
 def comfy_stats(url: str) -> dict | None:

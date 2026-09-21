@@ -422,6 +422,10 @@
               <svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/></svg>
               <span id="refsLabel">References</span></button>
             <input type="file" id="refFile" accept="image/*" multiple hidden>
+            <button class="pill" id="btnVoice" title="A reference voice — H3 speaks with it">
+              <svg viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3M8 21h8"/></svg>
+              <span id="voiceLabel">Voice</span></button>
+            <input type="file" id="voiceFile" accept="audio/*" hidden>
             <button class="pill" id="btnSettings">
               <svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16"/><circle cx="9" cy="6" r="2"/><circle cx="15" cy="12" r="2"/><circle cx="8" cy="18" r="2"/></svg>
               Settings</button>
@@ -698,7 +702,7 @@
 
 /* ========================= state ========================= */
 var S = {
-  view: "home", ratio: "16:9", mp: 0.2, seconds: 6, refs: [],
+  view: "home", ratio: "16:9", mp: 0.2, seconds: 6, refs: [], voice: null,
   status: null, jobs: [], images: [], libFilter: "", batch: 1,
   setupCursor: 0, taskId: null, taskCursor: 0, setupSeen: false, lightbox: null,
   board: [], boardJobs: {}
@@ -771,7 +775,8 @@ function syncSize() {
 /* ========================= draft ========================= */
 function saveDraft() {
   store("mm.draft", { prompt: $("description").value, ratio: S.ratio, mp: S.mp,
-    seconds: S.seconds, refs: S.refs, steps: $("steps-sl").value,
+    seconds: S.seconds, refs: S.refs, voice: S.voice,
+    steps: $("steps-sl").value,
     shift: $("shift-sl").value, shift2: $("shift2-sl").value });
 }
 function loadDraft() {
@@ -782,6 +787,7 @@ function loadDraft() {
   S.mp = Number(d.mp || 0.2);
   S.seconds = Number(d.seconds || 6);
   S.refs = d.refs || [];
+  S.voice = d.voice || null;
   $("mp-sl").value = S.mp;
   $("sec-sl").value = S.seconds;
   if (d.steps) { $("steps-sl").value = d.steps; $("stepsVal").textContent = d.steps; }
@@ -824,6 +830,26 @@ function renderRefs() {
   $("refsLabel").textContent = S.refs.length
     ? "References · " + S.refs.length : "References";
   $("btnRefs").classList.toggle("on", S.refs.length > 0);
+  $("voiceLabel").textContent = S.voice
+    ? "Voice · " + S.voice.label : "Voice";
+  $("btnVoice").classList.toggle("on", !!S.voice);
+  $("btnVoice").title = S.voice
+    ? "Speaking with " + S.voice.label + " — press to remove"
+    : "A reference voice — H3 speaks with it";
+}
+async function setVoice(input) {
+  var file = (input.files || [])[0];
+  input.value = "";
+  if (!file) return;
+  var fd = new FormData();
+  fd.append("file", file);
+  try {
+    var r = await api("/api/upload", { method: "POST", body: fd });
+    S.voice = { name: r.name, label: file.name.slice(0, 24) };
+    renderRefs();
+    saveDraft();
+    toast("Voice loaded — the clip's speech follows it.");
+  } catch (e) { toast(e.message, true); }
 }
 async function addRefs(input) {
   var files = Array.prototype.slice.call(input.files || []);
@@ -901,7 +927,9 @@ function collectBase() {
     upscale: segOn("segUpscale") === "on",
     tiled_decode: segOn("segTiled") === "on",
     seed: $("seed").value.trim() ? Number($("seed").value.trim()) : null,
-    dit: $("unet-sel").value
+    dit: $("unet-sel").value,
+    // the reference voice rides with every shot, board cards included
+    voice: S.voice ? S.voice.name : null
   };
 }
 function collect() {
@@ -2110,6 +2138,17 @@ function wire() {
   });
   $("btnRefs").addEventListener("click", function () { $("refFile").click(); });
   $("refFile").addEventListener("change", function (e) { addRefs(e.target); });
+  $("btnVoice").addEventListener("click", function () {
+    if (S.voice) {
+      S.voice = null;
+      renderRefs();
+      saveDraft();
+      toast("Voice removed.");
+    } else {
+      $("voiceFile").click();
+    }
+  });
+  $("voiceFile").addEventListener("change", function (e) { setVoice(e.target); });
   $("btnBatch").addEventListener("click", function () {
     S.batch = S.batch === 1 ? 2 : S.batch === 2 ? 4 : 1;
     $("btnBatch").textContent = "×" + S.batch; });

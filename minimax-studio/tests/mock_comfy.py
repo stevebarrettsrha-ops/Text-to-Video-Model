@@ -75,7 +75,8 @@ def _object_info():
         names = list(UPLOADS)
         OBJECT_INFO_CALLS += 1
         withhold = OBJECT_INFO_CALLS <= BLANK_UNETS
-    for cls, key in (("LoadImage", "image"), ("LoadVideo", "file")):
+    for cls, key in (("LoadImage", "image"), ("LoadVideo", "file"),
+                     ("LoadAudio", "audio")):
         if cls in out:
             out[cls]["input"]["required"][key][0] += names
     if withhold and "UNETLoader" in out:
@@ -179,6 +180,15 @@ def validate(graph):
                 continue
             if isinstance(kind, list):
                 if value not in kind:
+                    node_errs.append({"message": "Value not in list",
+                                      "details": f"{name}: {value!r}"})
+            elif isinstance(kind, str) and kind.upper().startswith(
+                    ("COMBO", "COMFY_DYNAMICCOMBO")):
+                opts = (spec[name][1] if len(spec[name]) > 1 else {}) or {}
+                options = opts.get("options") or []
+                if options and isinstance(options[0], dict):
+                    options = [o.get("key") for o in options]
+                if options and value not in options:
                     node_errs.append({"message": "Value not in list",
                                       "details": f"{name}: {value!r}"})
             elif kind == "INT" and not isinstance(value, int):

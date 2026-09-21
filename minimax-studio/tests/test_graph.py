@@ -52,6 +52,9 @@ def run(slow: bool = False) -> Suite:
 
         r2v = nodes_of(g, "MiniMaxH3ReferenceToVideo")[0][1]["inputs"]
         s.equal("length lands on the node", r2v["length"], 158)
+        s.equal("ref_image_size is filled — a required V3 combo a real "
+                "engine rejected as missing", r2v.get("ref_image_size"),
+                "match")
         dec_v = nodes_of(g, "VAEDecode")
         dec_a = nodes_of(g, "VAEDecodeAudio")
         s.check("both decodes are present — video and audio",
@@ -84,6 +87,27 @@ def run(slow: bool = False) -> Suite:
         r2v = nodes_of(built["prompt"], "MiniMaxH3ReferenceToVideo")[0][1]["inputs"]
         s.check("refs land on ref_images.ref_image_0 and _1",
                 "ref_images.ref_image_0" in r2v and "ref_images.ref_image_1" in r2v)
+
+        # -- a reference voice --------------------------------------------------
+        class FakeVoice:
+            filename = "my_voice.wav"
+            stream = b"wav"
+            mimetype = "audio/wav"
+
+        voice = client.upload(FakeVoice())
+        built = client.build({"prompt": "he speaks", "voice": voice})
+        g = built["prompt"]
+        client.queue(g)
+        s.check("ComfyUI accepts a clip with a reference voice", True)
+        load = nodes_of(g, "LoadAudio")
+        s.check("the voice loads through LoadAudio",
+                bool(load) and load[0][1]["inputs"]["audio"] == "my_voice.wav")
+        r2v = nodes_of(g, "MiniMaxH3ReferenceToVideo")[0][1]["inputs"]
+        s.check("and lands on ref_audios.ref_audio_0",
+                r2v.get("ref_audios.ref_audio_0") == [load[0][0], 0])
+        built = client.build({"prompt": "no voice"})
+        s.check("without a voice, no audio loader is added",
+                not nodes_of(built["prompt"], "LoadAudio"))
 
         # -- tiled decode -----------------------------------------------------
         built = client.build({"prompt": "x", "tiled_decode": True})

@@ -112,14 +112,31 @@ class ComfyClient:
                              ". Update ComfyUI from the Engine page, then "
                              "restart it.")
 
+    @staticmethod
+    def _combo_options(spec) -> list:
+        """The options of a combo input, whichever schema wrote it: classic
+        [[options], {...}] or the newer ["COMBO", {"options": [...]}] that
+        recent nodes (MiniMax H3 among them) are served with."""
+        if not isinstance(spec, (list, tuple)) or not spec:
+            return []
+        kind = spec[0]
+        if isinstance(kind, list):
+            return kind
+        opts = spec[1] if len(spec) > 1 and isinstance(spec[1], dict) else {}
+        if isinstance(kind, str) and kind.upper().startswith(
+                ("COMBO", "COMFY_DYNAMICCOMBO")):
+            options = opts.get("options") or []
+            if options and isinstance(options[0], dict):
+                return [o.get("key") for o in options]
+            return list(options)
+        return []
+
     def _enum(self, class_type: str, name: str) -> list[str]:
         try:
             spec = self.node_inputs(class_type).get(name)
         except ComfyError:
             return []
-        if spec and isinstance(spec[0], list):
-            return [str(v) for v in spec[0]]
-        return []
+        return [str(v) for v in self._combo_options(spec)]
 
     def unets(self) -> list[str]:
         return self._enum("UNETLoader", "unet_name")
@@ -249,8 +266,11 @@ class ComfyClient:
             opts = definition[1] if len(definition) > 1 else {}
             if not isinstance(opts, dict):
                 opts = {}
-            if isinstance(kind, list):
-                inputs[name] = opts.get("default", kind[0] if kind else "")
+            combo = self._combo_options(definition)
+            if combo:
+                # both combo schemas — a V3 combo left unfilled is how a
+                # required ref_image_size went missing on a real engine
+                inputs[name] = opts.get("default", combo[0] if combo else "")
             elif kind in ("INT", "FLOAT", "STRING", "BOOLEAN"):
                 if "default" in opts:
                     inputs[name] = opts["default"]
@@ -330,7 +350,20 @@ class ComfyClient:
             "width": {"names": ["width"], "value": width},
             "height": {"names": ["height"], "value": height},
             "length": {"names": ["length", "frames"], "value": length},
+            # the workflow's fifth widget: how reference images are resized.
+            # 'match' is what minimaxh3_r2v_with_upscale.json ships with.
+            "ref_size": {"names": ["ref_image_size"],
+                         "value": p.get("ref_image_size") or "match"},
         }
+        # a reference voice: H3 speaks with it (ref_audios.ref_audio_0)
+        if p.get("voice") and self.has("LoadAudio"):
+            g["14"] = self._node("LoadAudio", {
+                "audio": {"names": ["audio", "file"], "value": p["voice"],
+                          "required": True}})
+            r2v_wanted["ref_voice"] = {
+                "names": ["ref_audios.ref_audio_0", "ref_audio_0",
+                          "ref_audio"],
+                "value": ["14", 0]}
         for index, name in enumerate(refs):
             node_id = str(10 + index)
             g[node_id] = self._node("LoadImage", {

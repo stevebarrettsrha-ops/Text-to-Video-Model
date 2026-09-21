@@ -184,6 +184,17 @@
       "min": 5,
       "max": 1000
      }
+    ],
+    "ref_image_size": [
+     "COMBO",
+     {
+      "options": [
+       "match",
+       "512",
+       "768"
+      ],
+      "default": "match"
+     }
     ]
    },
    "optional": {
@@ -623,6 +634,23 @@
   },
   "output": [
    "MODEL"
+  ]
+ },
+ "LoadAudio": {
+  "input": {
+   "required": {
+    "audio": [
+     [
+      "example.wav"
+     ],
+     {
+      "audio_upload": true
+     }
+    ]
+   }
+  },
+  "output": [
+   "AUDIO"
   ]
  }
 }

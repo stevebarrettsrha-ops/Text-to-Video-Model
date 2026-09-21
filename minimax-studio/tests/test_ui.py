@@ -96,6 +96,8 @@ def run(slow: bool = False) -> Suite:
 
             # -- the prompt bar's own maths ---------------------------------
             pg.click('[data-view="create"]')
+            s.equal("the generator starts in explicit text-to-video mode",
+                    pg.text_content("#modeLabel"), "Text to video")
             s.check("the feed is not nested inside the sticky prompt bar",
                     not pg.evaluate("!!document.querySelector('.barwrap .feed')"))
             pg.click('#segSeconds button[data-v="8"]')

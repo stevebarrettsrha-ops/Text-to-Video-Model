@@ -338,7 +338,9 @@ class ComfyClient:
                             "value": float(p.get("shift_2", 3))}})
             model_ref = ["7", 0]
 
-        # reference images -> LoadImage, wired into ref_image_0..n
+        # Reference images preserve subjects and appearance. A reference video
+        # contributes its decoded frame sequence through ref_video_0, giving H3
+        # motion/composition to follow instead of reducing it to one still.
         refs = [r for r in (p.get("refs") or []) if r][:3]
         r2v_wanted = {
             "clip": {"names": ["clip"], "value": ["2", 0], "required": True},
@@ -364,6 +366,21 @@ class ComfyClient:
                 "names": ["ref_audios.ref_audio_0", "ref_audio_0",
                           "ref_audio"],
                 "value": ["14", 0]}
+        if p.get("ref_video"):
+            if not self.has("LoadVideo") or not self.has("GetVideoComponents"):
+                raise ComfyError("Reference video needs LoadVideo and "
+                                 "GetVideoComponents. Update ComfyUI from the "
+                                 "Engine page, then restart it.")
+            g["15"] = self._node("LoadVideo", {
+                "video": {"names": ["file", "video"],
+                          "value": p["ref_video"], "required": True}})
+            g["16"] = self._node("GetVideoComponents", {
+                "video": {"names": ["video"], "value": ["15", 0],
+                          "required": True}})
+            r2v_wanted["ref_video"] = {
+                "names": ["ref_videos.ref_video_0", "ref_video_0",
+                          "ref_video"],
+                "value": ["16", 0]}
         for index, name in enumerate(refs):
             node_id = str(10 + index)
             g[node_id] = self._node("LoadImage", {

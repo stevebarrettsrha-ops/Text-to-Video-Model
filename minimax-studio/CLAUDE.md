@@ -54,6 +54,15 @@ ComfyUI/input), so `renderRefs` must keep tolerating refs with no local
 thumbnail URL. Seek to `duration − 1/24` before drawing: the exact end of
 some containers decodes to a blank frame.
 
+## H3 input modes
+
+The generator exposes every conditioning family on
+`MiniMaxH3ReferenceToVideo`: prompt-only text-to-video, up to three subject
+images, one reference video (decoded through `LoadVideo` and
+`GetVideoComponents` into `ref_videos.ref_video_0`), and one reference audio.
+Do not collapse the video reference to a still; its frame sequence is the
+motion/composition signal. Inputs can be mixed.
+
 ## The board
 
 `data/board.json` is server-side state like the gallery, sanitised on save

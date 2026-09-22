@@ -262,6 +262,11 @@ class H(BaseHTTPRequestHandler):
                 self._send(200, real, "video/webm")
             else:
                 self._send(200, FAKE_MP4, "video/mp4")
+        elif p == "/queue":
+            with LOCK:
+                self._send(200, {
+                    "queue_running": [[0, pid, {}, {}, []] for pid in QUEUE_RUNNING],
+                    "queue_pending": [[0, pid, {}, {}, []] for pid in QUEUE_PENDING]})
         elif p == "/prompts":            # test-only: what was queued
             with LOCK:
                 self._send(200, PROMPTS)
@@ -282,7 +287,7 @@ class H(BaseHTTPRequestHandler):
                     "node_errors": bad})
                 return
             with LOCK:
-                pid = f"pid{len(HISTORY) + len(QUEUE_PENDING) + len(QUEUE_RUNNING) + 1}"
+                pid = f"pid{len(PROMPTS) + 1}"
                 PROMPTS[pid] = graph
                 QUEUE_PENDING.append(pid)
             threading.Thread(target=execute, args=(pid, graph),
@@ -291,6 +296,13 @@ class H(BaseHTTPRequestHandler):
         elif p == "/interrupt":
             with LOCK:
                 INTERRUPTS.extend(QUEUE_RUNNING)
+            self._send(200, {})
+        elif p == "/queue":
+            body = json.loads(raw or b"{}")
+            with LOCK:
+                for pid in body.get("delete", []):
+                    if pid in QUEUE_PENDING:     # as ComfyUI: gone, no history
+                        QUEUE_PENDING.remove(pid)
             self._send(200, {})
         elif p == "/testvideo":
             with LOCK:

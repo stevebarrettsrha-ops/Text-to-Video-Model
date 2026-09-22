@@ -456,4 +456,37 @@ def run(slow: bool = False) -> Suite:
             jobs = finish_jobs(app.url, timeout=30)
             s.equal("a cancelled job says cancelled",
                     jobs[0]["status"], "cancelled")
+
+    # -- cancelling a queued run leaves the running one alone ----------------
+    with comfy(delay=4.0) as mock, Workspace() as ws:
+        models = ws / "models"
+        fake_weights(models)
+        with studio(mock.url, ws / "data", models) as app:
+            r = requests.post(app.url + "/api/generate",
+                              json={"prompt": "two", "runs": 2, "seed": 7},
+                              timeout=30)
+            first, second = r.json()["jobs"]
+            wait_for(lambda: all(j.get("prompt_id") for j in requests.get(
+                app.url + "/api/jobs", timeout=10).json()), 10)
+            requests.post(f"{app.url}/api/jobs/{second}/cancel", timeout=10)
+            jobs = {j["id"]: j for j in finish_jobs(app.url, timeout=30)}
+            s.equal("the cancelled queued job says cancelled",
+                    jobs[second]["status"], "cancelled")
+            s.equal("the job already rendering still finishes",
+                    jobs[first]["status"], "done")
+            s.check("a fixed seed steps once per run",
+                    jobs[first]["seed"] == 7 and jobs[second]["seed"] == 8)
+            s.check("a finished job carries when it finished",
+                    all("finished" in j for j in jobs.values()))
+
+            # -- only this machine's own pages may drive the app -------------
+            r = requests.get(app.url + "/api/jobs", timeout=10,
+                             headers={"Host": "evil.example:80"})
+            s.equal("a foreign Host header is refused", r.status_code, 403)
+            r = requests.post(app.url + "/api/comfy/restart", timeout=10,
+                              headers={"Origin": "https://evil.example"})
+            s.equal("a cross-site POST is refused", r.status_code, 403)
+            r = requests.post(app.url + "/api/config", json={}, timeout=10,
+                              headers={"Origin": app.url})
+            s.check("the app's own page may still post", r.ok)
     return s

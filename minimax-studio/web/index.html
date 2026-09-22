@@ -784,7 +784,10 @@ function syncSize() {
 /* ========================= draft ========================= */
 function saveDraft() {
   store("mm.draft", { prompt: $("description").value, ratio: S.ratio, mp: S.mp,
-    seconds: S.seconds, refs: S.refs, voice: S.voice, motion: S.motion,
+    seconds: S.seconds, voice: S.voice, motion: S.motion,
+    // blob: thumbnails die with the page; the names are what ComfyUI needs
+    refs: S.refs.map(function (r) { return { name: r.name, url: "" }; }),
+    upscale: segOn("segUpscale"), tiled: segOn("segTiled"),
     steps: $("steps-sl").value,
     shift: $("shift-sl").value, shift2: $("shift2-sl").value });
 }
@@ -809,6 +812,11 @@ function loadDraft() {
     b.classList.toggle("on", b.dataset.v === S.ratio); });
   $("segSeconds").querySelectorAll("button").forEach(function (b) {
     b.classList.toggle("on", Number(b.dataset.v) === S.seconds); });
+  [["segUpscale", d.upscale], ["segTiled", d.tiled]].forEach(function (t) {
+    if (!t[1]) return;
+    $(t[0]).querySelectorAll("button").forEach(function (b) {
+      b.classList.toggle("on", b.dataset.v === t[1]); });
+  });
   renderRefs();
   grow($("description"));
 }
@@ -1007,15 +1015,21 @@ async function generate() {
   } catch (e) { toast(e.message, true); }
   finally { $("btnGenerate").disabled = false; }
 }
-var jobTimer = null;
+var jobTimer = null, jobPolling = false;
 async function pollJobs() {
+  // one loop at a time: a second caller would orphan a timer and double up
+  if (jobPolling) return;
+  jobPolling = true;
+  try { await pollJobsOnce(); } finally { jobPolling = false; }
+}
+async function pollJobsOnce() {
   clearTimeout(jobTimer);
   var jobs;
   try { jobs = await api("/api/jobs"); }
   catch (e) { jobTimer = setTimeout(pollJobs, 3000); return; }
-  var justDone = jobs.some(function (n) {
+  var justDone = jobs.filter(function (n) {
     return n.status === "done" && S.jobs.some(function (o) {
-      return o.id === n.id && o.status === "running"; }); });
+      return o.id === n.id && o.status === "running"; }); })[0];
   S.jobs = jobs;
   // hand finished board jobs their clip ids
   var boardChanged = false;
@@ -1034,11 +1048,14 @@ async function pollJobs() {
   if (boardChanged) {
     saveBoard(true);
     await loadImages();
-    if (S.view === "board") renderBoard();
+    // a full re-render would eat what is being typed in another card
+    var typing = document.activeElement &&
+      document.activeElement.closest && document.activeElement.closest(".bcard");
+    if (S.view === "board") { if (typing) updateBoardJobs(); else renderBoard(); }
   } else if (S.view === "board") updateBoardJobs();
   if (justDone) {
     await loadImages();
-    var done = jobs.filter(function (j) { return j.status === "done"; })[0];
+    var done = justDone;
     var note = done && done.images && done.images[0] && done.images[0].note;
     toast(note || "Clip ready.", !!note);
   }
@@ -1172,8 +1189,10 @@ function reuse(im) {
       b.classList.toggle("on", b.dataset.v === S.ratio); });
   }
   if (im.megapixels) { S.mp = im.megapixels; $("mp-sl").value = S.mp; }
-  if (im.seconds) {
-    S.seconds = Math.max(1, Math.round(im.seconds));
+  if (im.seconds || im.length) {
+    // the exact rendered length, so frames() gives back the same count
+    // instead of rounding up to the next whole second and growing the clip
+    S.seconds = im.length ? im.length / (im.fps || 24) : Number(im.seconds);
     $("sec-sl").value = S.seconds;
     $("segSeconds").querySelectorAll("button").forEach(function (b) {
       b.classList.toggle("on", Number(b.dataset.v) === S.seconds); });
@@ -1181,20 +1200,26 @@ function reuse(im) {
   if (im.steps) { $("steps-sl").value = im.steps; $("stepsVal").textContent = im.steps; }
   if (im.shift) { $("shift-sl").value = im.shift;
     $("shiftVal").textContent = Number(im.shift).toFixed(1); }
-  $("lightbox").hidden = true;
+  // the clip's own reference images, by name — still in ComfyUI/input
+  S.refs = (im.refs || []).map(function (n) { return { name: n, url: "" }; });
+  closeLightbox();
   show("create");
   grow($("description"));
   syncSize();
   saveDraft();
   renderRefs();
-  toast("Settings loaded. Motion and voice references were restored. Add the "
-        + "reference images again for the same faces.");
+  toast("Settings loaded, with the clip's own references.");
 }
 async function removeImage(im) {
   if (!confirm("Delete this clip?")) return;
   await api("/api/clip/" + im.id, { method: "DELETE" });
-  if (S.lightbox && S.lightbox.id === im.id) $("lightbox").hidden = true;
+  if (S.lightbox && S.lightbox.id === im.id) closeLightbox();
   loadImages();
+}
+function closeLightbox() {
+  $("lightbox").hidden = true;
+  $("lbVideo").pause();
+  lbSeq = null;
 }
 function openLightbox(im, inSeq) {
   if (!inSeq) lbSeq = null;
@@ -1313,7 +1338,7 @@ async function continueClip(im) {
   }
   if (im.megapixels) { S.mp = im.megapixels; $("mp-sl").value = S.mp; }
   $("description").value = "";
-  $("lightbox").hidden = true;
+  closeLightbox();
   show("create");
   renderRefs();
   syncSize();
@@ -1553,8 +1578,17 @@ async function renderAllBoard() {
       var failed = await new Promise(function (resolve) {
         var tick = async function () {
           var job = S.jobs.filter(function (j) { return j.id === jid; })[0];
-          if (job && job.status !== "running") {
-            resolve(job.status !== "done"); return;
+          // done only once the clip is in S.images, or the next chained
+          // shot finds no clip to take a frame from
+          if (job && job.status === "done" && shotClip(shot)) {
+            resolve(false); return;
+          }
+          if (job && job.status !== "running" && job.status !== "done") {
+            resolve(true); return;
+          }
+          if (!job && !jobPolling && !S.jobs.some(function (j) {
+                return j.status === "running"; })) {
+            resolve(!shotClip(shot)); return;      // the job aged out
           }
           setTimeout(tick, 1200);
         };
@@ -1581,7 +1615,7 @@ async function rtxUpscale(scale) {
     await api("/api/upscale/" + S.lightbox.id, { method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ scale: scale, quality: "ULTRA" }) });
-    $("lightbox").hidden = true;
+    closeLightbox();
     show("create");
     toast("Upscaling ×" + scale + " on the RTX SDK — no diffusion weights, so "
           + "this one is quick.");
@@ -1850,7 +1884,7 @@ async function loadHf() {
     $("models-dir-note").textContent = s.models_dir
       ? "Stored under " + s.models_dir : "No models folder set yet — run setup first.";
     var sel = $("hf-folder");
-    sel.innerHTML = "";
+    sel.innerHTML = '<option value="">auto (as listed)</option>';
     s.folders.forEach(function (f) {
       var o = document.createElement("option");
       o.value = f; o.textContent = f; sel.appendChild(o); });
@@ -2136,10 +2170,13 @@ async function refreshStatus() {
   $("btnRefs").title = caps.r2v === false
     ? "The MiniMax H3 nodes are not loaded in ComfyUI." : "";
   var c = st.config || {};
-  $("cfg-url").value = c.comfy_url || "";
-  $("cfg-dir").value = c.comfy_dir || "";
-  $("cfg-models").value = c.models_dir || "";
-  $("cfg-auto").checked = !!c.auto_start_comfy;
+  // never overwrite what is being edited: this runs every six seconds
+  if ($("veil-settings").hidden) {
+    $("cfg-url").value = c.comfy_url || "";
+    $("cfg-dir").value = c.comfy_dir || "";
+    $("cfg-models").value = c.models_dir || "";
+    $("cfg-auto").checked = !!c.auto_start_comfy;
+  }
   $("cfg-note").textContent = st.schema_error || "";
   if (!st.setup_complete && !S.setupSeen) { S.setupSeen = true; openSetup(); }
 }
@@ -2262,6 +2299,8 @@ function wire() {
     $("shift2-sl").value = 3; $("shift2Val").textContent = "3.0";
     $("mp-sl").value = 0.2; S.mp = 0.2;
     $("sec-sl").value = 6; S.seconds = 6;
+    $("segSeconds").querySelectorAll("button").forEach(function (b) {
+      b.classList.toggle("on", Number(b.dataset.v) === S.seconds); });
     $("seed").value = "";
     syncSize(); saveDraft(); toast("Back to defaults.");
   });
@@ -2280,11 +2319,7 @@ function wire() {
   $("libSearch").addEventListener("input", function (e) {
     S.libFilter = e.target.value; renderLib(); });
 
-  $("lbClose").addEventListener("click", function () {
-    $("lightbox").hidden = true;
-    $("lbVideo").pause();
-    lbSeq = null;
-  });
+  $("lbClose").addEventListener("click", closeLightbox);
   $("lbReuse").addEventListener("click", function () {
     if (S.lightbox) reuse(S.lightbox); });
   $("lbDownload").addEventListener("click", function () {
@@ -2298,7 +2333,7 @@ function wire() {
     if (!S.lightbox) return;
     reuse(S.lightbox);
     $("seed").value = "";
-    $("lightbox").hidden = true;
+    closeLightbox();
     generate();
   });
 
@@ -2369,14 +2404,12 @@ function wire() {
   });
 
   document.addEventListener("keydown", function (e) {
-    if ((e.ctrlKey || e.metaKey) && e.key === "Enter") { e.preventDefault(); generate(); }
+    if ((e.ctrlKey || e.metaKey) && e.key === "Enter" && !(e.target.closest &&
+        e.target.closest(".bcard, #veil-settings, #veil-setup"))) {
+      e.preventDefault(); generate();
+    }
     if (e.key === "Escape") {
-      if (!$("lightbox").hidden) {
-        $("lightbox").hidden = true;
-        $("lbVideo").pause();
-        lbSeq = null;
-        return;
-      }
+      if (!$("lightbox").hidden) { closeLightbox(); return; }
       closePops();
       $("veil-settings").hidden = true;
       if ($("setup-progress").hidden) $("veil-setup").hidden = true;

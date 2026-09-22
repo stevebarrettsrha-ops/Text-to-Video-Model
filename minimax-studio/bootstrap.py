@@ -426,7 +426,7 @@ def _run(cmd: list[str], **kw) -> subprocess.CompletedProcess:
 
 
 def _stream(cmd: list[str], on_line, cwd: str | None = None,
-            env: dict | None = None) -> int:
+            env: dict | None = None, should_cancel=None) -> int:
     r"""Run `cmd` and hand every line of its output to `on_line` as it appears.
 
     Splits on carriage returns as well as newlines: git writes its progress by
@@ -442,6 +442,13 @@ def _stream(cmd: list[str], on_line, cwd: str | None = None,
         block = proc.stdout.read1(8192)
         if not block:
             break
+        if should_cancel and should_cancel():
+            proc.terminate()
+            try:
+                proc.wait(15)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+            return proc.wait()
         buf += block
         parts = re.split(rb"[\r\n]", buf)
         buf = parts.pop()
@@ -616,6 +623,26 @@ def hf_tree(cfg: dict, repo: str, revision: str = "main") -> list[dict]:
 def download_file(cfg: dict, repo: str, path: str, dest: Path,
                   on_progress=None, should_cancel=None,
                   revision: str = "main") -> None:
+    with _writing_lock:
+        if dest in _writing:
+            raise RuntimeError(f"{dest.name} is already downloading.")
+        _writing.add(dest)
+    try:
+        _download_file(cfg, repo, path, dest, on_progress, should_cancel,
+                       revision)
+    finally:
+        with _writing_lock:
+            _writing.discard(dest)
+
+
+# one writer per .part — setup and the Models page can otherwise both append
+_writing: set[Path] = set()
+_writing_lock = threading.Lock()
+
+
+def _download_file(cfg: dict, repo: str, path: str, dest: Path,
+                   on_progress=None, should_cancel=None,
+                   revision: str = "main") -> None:
     import urllib.parse
     url = (f"{hf_endpoint(cfg)}/{repo}/resolve/{revision}/"
            + urllib.parse.quote(path))
@@ -628,17 +655,26 @@ def download_file(cfg: dict, repo: str, path: str, dest: Path,
     with requests.get(url, headers=headers, stream=True, timeout=60,
                       allow_redirects=True) as r:
         if r.status_code == 416:
-            part.replace(dest)
-            return
+            # the part already covers the file — but only trust that when the
+            # server's own size ("bytes */SIZE") agrees; otherwise start over
+            remote = r.headers.get("Content-Range", "").rsplit("/", 1)[-1]
+            if remote.isdigit() and int(remote) == have:
+                part.replace(dest)
+                return
+            part.unlink(missing_ok=True)
+            r.close()
+            return _download_file(cfg, repo, path, dest, on_progress,
+                                  should_cancel, revision)
         if r.status_code in (401, 403):
             raise RuntimeError("HuggingFace refused the download. Accept the "
                                "MiniMax H3 licence on the model page, then add "
                                "a token on the Models page.")
         r.raise_for_status()
-        total = int(r.headers.get("Content-Length", 0)) + have
         mode = "ab" if (have and r.status_code == 206) else "wb"
         if mode == "wb":
             have = 0
+        length = int(r.headers.get("Content-Length", 0))
+        total = length + have if length else 0
         got, last, started = have, 0.0, time.time()
         with open(part, mode) as fh:
             for chunk in r.iter_content(chunk_size=1024 * 1024):
@@ -654,6 +690,11 @@ def download_file(cfg: dict, repo: str, path: str, dest: Path,
                     speed = (got - have) / max(now - started, .1)
                     eta = (total - got) / speed if speed > 0 and total else 0
                     on_progress(got, total, speed, eta)
+    if total and part.stat().st_size != total:
+        # a stream that ended early; the part stays so the next try resumes
+        raise RuntimeError(f"{dest.name} stopped short at "
+                           f"{fmt_size(part.stat().st_size)} of "
+                           f"{fmt_size(total)} — try again to resume.")
     part.replace(dest)
 
 
@@ -722,8 +763,23 @@ class ComfyProcess:
             except Exception:
                 try:
                     self.proc.kill()
+                    self.proc.wait(timeout=5)     # reap it: no zombie left
                 except Exception:
                     pass
+
+
+def normal_url(url: str) -> str:
+    """The ComfyUI address as stored: trimmed, no trailing slash."""
+    return str(url or "").strip().rstrip("/")
+
+
+def comfy_port(url: str) -> int:
+    """The port in a ComfyUI address; ComfyUI's own 8188 when none is given."""
+    from urllib.parse import urlsplit
+    try:
+        return urlsplit(normal_url(url)).port or 8188
+    except ValueError:
+        return 8188
 
 
 def comfy_online(url: str) -> bool:
@@ -779,8 +835,10 @@ def port_pids(port: int) -> list[int]:
             return []
         for line in out.splitlines():
             parts = line.split()
+            # the state column is translated on localised Windows, so a
+            # listener is recognised by its empty foreign address instead
             if len(parts) >= 5 and parts[0] == "TCP" \
-                    and parts[3] == "LISTENING" \
+                    and parts[2] in ("0.0.0.0:0", "[::]:0") \
                     and parts[1].rsplit(":", 1)[-1] == str(port):
                 try:
                     pids.add(int(parts[4]))
@@ -803,10 +861,14 @@ def port_pids(port: int) -> list[int]:
 def pid_cmdline(pid: int) -> str:
     try:
         if platform.system() == "Windows":
-            out = _run(["wmic", "process", "where", f"processid={pid}",
-                        "get", "commandline"], timeout=25).stdout
-            lines = [ln.strip() for ln in out.splitlines()
-                     if ln.strip() and "CommandLine" not in ln]
+            # wmic is gone from current Windows 11; CIM through PowerShell
+            # is the supported way to read another process's command line
+            out = _run(["powershell", "-NoProfile", "-NonInteractive",
+                        "-Command",
+                        f"(Get-CimInstance Win32_Process -Filter "
+                        f"'ProcessId={int(pid)}').CommandLine"],
+                       timeout=25).stdout
+            lines = [ln.strip() for ln in out.splitlines() if ln.strip()]
             return lines[0] if lines else ""
         cmd = Path(f"/proc/{pid}/cmdline")
         if cmd.exists():
@@ -919,7 +981,8 @@ def pip_has_raw_progress(python: str) -> bool:
     return _PIP_RAW_OK[python]
 
 
-def pip_install(python: str, args: list[str], log, on_pct=None) -> None:
+def pip_install(python: str, args: list[str], log, on_pct=None,
+                should_cancel=None) -> None:
     """Install with pip. `on_pct(pct|None, detail)` is called as it downloads."""
     import urllib.parse
     cmd = [python, "-m", "pip", "install"]
@@ -962,7 +1025,9 @@ def pip_install(python: str, args: list[str], log, on_pct=None) -> None:
                 # torch takes minutes over it, so say what is happening.
                 on_pct(None, text[:120])
 
-    if _stream(cmd, line) != 0:
+    if _stream(cmd, line, should_cancel=should_cancel) != 0:
+        if should_cancel and should_cancel():
+            raise RuntimeError("Cancelled.")
         raise RuntimeError("pip install failed — see the log.")
     if "pip" in args:
         # pip just upgraded itself, so whether it can report progress may have
@@ -1215,7 +1280,7 @@ def run_setup(cfg: dict, prog: Progress, comfy: ComfyProcess,
             prog.log("ComfyUI is already running — restart it so it picks up the "
                      "new nodes and weights.")
         else:
-            port = int(url.rsplit(":", 1)[-1])
+            port = comfy_port(url)
             comfy.start(cfg["python"], Path(cfg["comfy_dir"]), port, prog,
                         cfg.get("lowvram", True))
 

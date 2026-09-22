@@ -542,6 +542,29 @@ class ComfyClient:
         except Exception:
             pass
 
+    def cancel(self, prompt_id: str) -> None:
+        """Stop this prompt and only this one.
+
+        A bare /interrupt stops whatever is running, which may be another
+        job; a prompt still waiting is taken off the queue instead.
+        """
+        try:
+            r = requests.get(f"{self.url}/queue", timeout=10)
+            r.raise_for_status()
+            q = r.json()
+        except Exception:
+            return
+        running = {e[1] for e in q.get("queue_running") or []
+                   if isinstance(e, list) and len(e) > 1}
+        if prompt_id in running:
+            self.interrupt()
+        else:
+            try:
+                requests.post(f"{self.url}/queue",
+                              json={"delete": [prompt_id]}, timeout=10)
+            except Exception:
+                pass
+
     def history(self, prompt_id: str) -> dict:
         r = requests.get(f"{self.url}/history/{prompt_id}", timeout=20)
         r.raise_for_status()
@@ -589,7 +612,7 @@ class ComfyClient:
         files = {"image": (file_storage.filename, file_storage.stream,
                            file_storage.mimetype or "application/octet-stream")}
         r = requests.post(f"{self.url}/upload/image", files=files,
-                          data={"type": "input", "overwrite": "true"}, timeout=600)
+                          data={"type": "input", "overwrite": "false"}, timeout=600)
         r.raise_for_status()
         data = r.json()
         name = data.get("name") or file_storage.filename

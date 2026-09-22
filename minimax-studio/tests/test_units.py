@@ -213,4 +213,34 @@ def run(slow: bool = False) -> Suite:
             said, "stopped")
     s.equal("and already gone for one that was never there",
             bootstrap.kill_pid(sleeper.pid), "already gone")
+
+    # -- the ComfyUI address, however it was typed ---------------------------
+    s.equal("a trailing slash does not break the port",
+            bootstrap.comfy_port("http://127.0.0.1:8188/"), 8188)
+    s.equal("no port means ComfyUI's own",
+            bootstrap.comfy_port("http://localhost"), 8188)
+    s.equal("an explicit port is read",
+            bootstrap.comfy_port(" http://127.0.0.1:9000 "), 9000)
+    s.equal("the stored address loses its trailing slash",
+            bootstrap.normal_url(" http://127.0.0.1:8188/ "),
+            "http://127.0.0.1:8188")
+
+    # -- download set takes each file from its own repo ----------------------
+    seen = []
+    real = manager.hf_download
+    manager.hf_download = lambda cfg, repo, path, folder: seen.append(
+        (repo, path, folder))
+    try:
+        cfg = dict(bootstrap.DEFAULT_CONFIG, turbo="4step",
+                   hf_repo="someone/else", models_dir=str(Path(
+                       __file__).resolve().parent / "no-such-models"))
+        manager.download_set(cfg)
+    finally:
+        manager.hf_download = real
+    lora = [x for x in seen if x[2] == "loras"]
+    s.check("the 4-step LoRA downloads from the turbo repo root",
+            lora == [(bootstrap.TURBO_REPO, bootstrap.TURBO_LORAS["4step"]["name"],
+                      "loras")])
+    s.check("a browsed repo does not redirect the set",
+            all(x[0] != "someone/else" for x in seen))
     return s

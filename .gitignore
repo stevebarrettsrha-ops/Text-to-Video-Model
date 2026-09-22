@@ -2,3 +2,4 @@ __pycache__/
 *.pyc
 minimax-studio/data/
 minimax-studio/tests/.inline.js
+minimax-studio/.venv/

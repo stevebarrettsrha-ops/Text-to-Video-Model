@@ -311,8 +311,10 @@ def main(argv: list[str] | None = None) -> int:
             with Monitor(url) as mon:
                 res = run_one(client, built["prompt"], a.timeout)
                 mon.sample()
-        except (ComfyError, requests.RequestException) as exc:
-            res, mon = {"error": str(exc), "stages": {}}, None
+        except Exception as exc:  # noqa: BLE001 — a dead engine mid-matrix
+            # (a RAM out-of-memory, say) is a result to report, not a crash
+            res, mon = {"error": f"{type(exc).__name__}: {exc}",
+                        "stages": {}}, None
         row.update({k: res.get(k) for k in
                     ("total", "wait", "s_per_step", "refine_s_per_step", "error")})
         row.update({f"t_{k}": v for k, v in res.get("stages", {}).items()})
@@ -340,8 +342,8 @@ def main(argv: list[str] | None = None) -> int:
                     row["rtx_file"] = rclip.name if rclip else ""
                 else:
                     row["rtx_error"] = rres["error"]
-            except (ComfyError, requests.RequestException) as exc:
-                row["rtx_error"] = str(exc)
+            except Exception as exc:  # noqa: BLE001
+                row["rtx_error"] = f"{type(exc).__name__}: {exc}"
         rows.append(row)
         if row.get("error"):
             print(f"    FAILED — {row['error']}")

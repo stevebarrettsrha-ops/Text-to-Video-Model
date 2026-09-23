@@ -1027,12 +1027,16 @@ async function generate() {
   } catch (e) { toast(e.message, true); }
   finally { $("btnGenerate").disabled = false; }
 }
-var jobTimer = null, jobPolling = false;
+var jobTimer = null, jobPolling = false, pollAgain = false;
 async function pollJobs() {
-  // one loop at a time: a second caller would orphan a timer and double up
-  if (jobPolling) return;
+  // one loop at a time: a second caller would orphan a timer and double up.
+  // A call that lands mid-poll is not dropped — it runs once more after,
+  // or a job queued in that window would never be seen
+  if (jobPolling) { pollAgain = true; return; }
   jobPolling = true;
-  try { await pollJobsOnce(); } finally { jobPolling = false; }
+  try {
+    do { pollAgain = false; await pollJobsOnce(); } while (pollAgain);
+  } finally { jobPolling = false; }
 }
 async function pollJobsOnce() {
   clearTimeout(jobTimer);

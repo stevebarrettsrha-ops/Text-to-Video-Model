@@ -238,6 +238,36 @@ def run(slow: bool = False) -> Suite:
             bootstrap.extra_models(dict(bootstrap.DEFAULT_CONFIG,
                                         want_kjnodes=False)), [])
 
+    # -- live-preview frames off the websocket ---------------------------------
+    import json as _json
+    import os
+    import struct
+    import tempfile
+    os.environ.setdefault("MINIMAX_STUDIO_DATA", tempfile.mkdtemp())
+    import server
+    png = b"\x89PNG\r\n\x1a\n" + b"rest"
+    server.ws_preview.clear()
+    server.take_preview(struct.pack(">II", 1, 2) + png, "pidA")
+    s.check("a plain PREVIEW_IMAGE frame is credited to the running prompt",
+            server.ws_preview.get("pidA", {}).get("mime") == "image/png")
+    meta = _json.dumps({"prompt_id": "pidB"}).encode()
+    server.take_preview(struct.pack(">II", 4, len(meta)) + meta
+                        + b"\xff\xd8\xff" + b"jpg", None)
+    s.check("a frame with metadata names its own prompt",
+            server.ws_preview.get("pidB", {}).get("mime") == "image/jpeg")
+    server.take_preview(struct.pack(">II", 1, 2) + png, "pidA")
+    s.equal("each new frame advances the counter",
+            server.ws_preview["pidA"]["n"], 2)
+    server.take_preview(struct.pack(">II", 3, 0) + b"text", "pidC")
+    server.take_preview(struct.pack(">II", 1, 2) + png, None)
+    s.check("other events, and frames with no prompt to credit, are ignored",
+            set(server.ws_preview) == {"pidA", "pidB"})
+
+    # -- cancel reports whether ComfyUI let go -----------------------------------
+    from comfy import ComfyClient
+    s.equal("a cancel ComfyUI never heard is not reported done",
+            ComfyClient("http://127.0.0.1:9").cancel("pid"), False)
+
     # -- the ComfyUI address, however it was typed ---------------------------
     s.equal("a trailing slash does not break the port",
             bootstrap.comfy_port("http://127.0.0.1:8188/"), 8188)

@@ -191,7 +191,8 @@ def ws_listener() -> None:
                         value=data.get("value", 0), max=data.get("max", 0))
                 elif mtype in ("execution_success", "execution_error") and pid:
                     ws_progress.pop(pid, None)
-                    ws_preview.pop(pid, None)
+                    # the last frame stays (take_preview caps how many): a
+                    # card rendered just before the finish still asks for it
         except Exception:
             time.sleep(4)
 

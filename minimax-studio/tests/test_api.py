@@ -504,8 +504,12 @@ def run(slow: bool = False) -> Suite:
             jobs = finish_jobs(app.url, timeout=30)
             s.check("the render still finishes with the preview on",
                     jobs[0]["status"] == "done")
-            s.check("a finished job drops its preview",
+            s.check("a finished job stops advertising a preview",
                     not jobs[0].get("preview"))
+            s.equal("but a card that asked just before the finish still gets "
+                    "its frame, not a broken image",
+                    requests.get(f"{app.url}/api/jobs/{job_id}/preview?n=1",
+                                 timeout=10).status_code, 200)
             r = requests.post(app.url + "/api/generate",
                               json={"prompt": "no peeking", "preview": False},
                               timeout=30)

@@ -318,6 +318,10 @@ def api_status():
                 if cfg.get("comfy_dir") else "")
         payload["engine_mismatch"] = bool(
             argv and want and want not in argv.replace("\\", "/").lower())
+        # low-VRAM mode is configured, but the engine answering lacks it
+        payload["engine_lowvram_off"] = bool(
+            cfg.get("lowvram", True)
+            and bootstrap.engine_lowvram(stats) is False)
         payload["engine_managed"] = comfy_proc.alive()
     payload["ready"] = bool(online and payload["nodes_ready"] and not missing)
     return jsonify(payload)
@@ -960,6 +964,8 @@ def ensure_engine_at_boot() -> None:
     want = str(Path(cfg["comfy_dir"])).replace("\\", "/").lower()
     if argv and want and want not in argv.replace("\\", "/").lower():
         reasons.append("a different install is answering the address")
+    if cfg.get("lowvram", True) and bootstrap.engine_lowvram(stats) is False:
+        reasons.append("it was started without low-VRAM mode (--lowvram)")
 
     if not reasons:
         _note(f"Adopting the ComfyUI already running at {url}.")

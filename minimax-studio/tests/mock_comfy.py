@@ -249,7 +249,8 @@ class H(BaseHTTPRequestHandler):
             system = {"comfyui_version": "0.3.75"}
             root = os.environ.get("MOCK_COMFY_ROOT", "")
             if root:
-                system["argv"] = [f"{root}/main.py"]
+                system["argv"] = [f"{root}/main.py"] + os.environ.get(
+                    "MOCK_COMFY_FLAGS", "").split()
             self._send(200, {"system": system})
         elif p.startswith("/history/"):
             pid = p.rsplit("/", 1)[-1]

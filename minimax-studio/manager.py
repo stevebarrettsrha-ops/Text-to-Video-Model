@@ -224,7 +224,7 @@ def dependencies(cfg: dict, client=None) -> list[dict]:
             try:
                 d = _json.loads(out.splitlines()[-1])
                 if d["cuda"]:
-                    gb = d["vram"] / 1e9
+                    gb = d["vram"] / 1024 ** 3     # GiB: an 8 GB card, not "9 GB"
                     # 8 GB is the proven floor (RTX 4060, this app's defaults)
                     state = "ok" if gb >= 7 else "warn"
                     detail = f"torch {d['v']} — {d['dev']}, {gb:.0f} GB"
@@ -258,7 +258,7 @@ def dependencies(cfg: dict, client=None) -> list[dict]:
             items.append({"id": "models", "label": "MiniMax H3 weights",
                           "state": "ok",
                           "detail": f"All five files present "
-                                    f"({cfg.get('precision', 'fp8')}).",
+                                    f"({cfg.get('precision', 'int8')}).",
                           "action": "models"})
     else:
         items.append({"id": "models", "label": "MiniMax H3 weights",

@@ -414,6 +414,18 @@ def run(slow: bool = False) -> Suite:
             st = requests.get(app.url + "/api/status", timeout=10).json()
             s.check("the right engine on the address is not",
                     st["engine_mismatch"] is False)
+            s.check("an engine started without --lowvram is called out",
+                    st["engine_lowvram_off"] is True)
+    with comfy(MOCK_COMFY_ROOT="/opt/mine/ComfyUI",
+               MOCK_COMFY_FLAGS="--lowvram --cache-none") as mock, \
+            Workspace() as ws:
+        models = ws / "models"
+        fake_weights(models)
+        with studio(mock.url, ws / "data", models,
+                    comfy_dir="/opt/mine/ComfyUI") as app:
+            st = requests.get(app.url + "/api/status", timeout=10).json()
+            s.check("one started with --lowvram is not",
+                    st["engine_lowvram_off"] is False)
 
     # -- ComfyUI down: refuse work, stay standing -----------------------------
     with Workspace() as ws:

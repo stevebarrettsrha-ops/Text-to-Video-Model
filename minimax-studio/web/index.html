@@ -1802,6 +1802,10 @@ async function pollEngineLog() {
       ((st.config || {}).comfy_url || "this address") +
       (st.engine_argv ? " (" + st.engine_argv + ")" : "") +
       ". Close it, or point Settings at the folder it runs from.";
+  } else if (st.engine_lowvram_off && d.online) {
+    state = "⚠ This ComfyUI was started without --lowvram. On an 8 GB card "
+          + "the model will not fit — press Restart ComfyUI so MiniMax Studio "
+          + "starts it in low-VRAM mode.";
   } else if (d.running) {
     state = d.online ? "Running — started by MiniMax Studio."
                      : "Starting… the first start is slow.";

@@ -214,6 +214,21 @@ def run(slow: bool = False) -> Suite:
     s.equal("and already gone for one that was never there",
             bootstrap.kill_pid(sleeper.pid), "already gone")
 
+    # -- an 8 GB card, as it reports itself -----------------------------------
+    rtx4060 = 8_585_216_000                    # torch total_memory, in bytes
+    verdict, notes = bootstrap.assess(rtx4060, 32 * 1024 ** 3, 10**12,
+                                      50e9, 33e9)
+    s.equal("an RTX 4060 + 32 GB is tight, as calibrated", verdict, "tight")
+    s.check("and it reads as 8 GB, not 9", notes[0].startswith("8 GB"))
+    verdict, notes = bootstrap.assess(rtx4060, 32 * 1024 ** 3, 10**12,
+                                      50e9, 33e9, lowvram=False)
+    s.check("without low-VRAM mode an 8 GB card is hard, and says why",
+            verdict == "hard" and any("Low-VRAM" in n for n in notes))
+    s.equal("the flag is read from the engine's own argv",
+            [bootstrap.engine_lowvram({"argv": ["main.py", "--lowvram"]}),
+             bootstrap.engine_lowvram({"argv": ["main.py"]}),
+             bootstrap.engine_lowvram({})], [True, False, None])
+
     # -- the ComfyUI address, however it was typed ---------------------------
     s.equal("a trailing slash does not break the port",
             bootstrap.comfy_port("http://127.0.0.1:8188/"), 8188)

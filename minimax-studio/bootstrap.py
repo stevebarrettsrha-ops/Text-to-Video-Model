@@ -262,8 +262,13 @@ def _vram_bytes(python: str) -> tuple[int, str]:
         return 0, ""
 
 
+# what people call "8 GB" or "32 GB" is GiB: an RTX 4060 reports 8.59e9
+# bytes, which divided by 1e9 read as "9 GB"
+GIB = 1024 ** 3
+
+
 def assess(vram: int, ram: int, free_disk: int, download: int,
-           peak: int) -> tuple[str, list[str]]:
+           peak: int, lowvram: bool = True) -> tuple[str, list[str]]:
     """The verdict from the measurements — calibrated against a real run.
 
     An RTX 4060 (8 GB) with 32 GB of RAM renders H3 shots in minutes with
@@ -283,28 +288,34 @@ def assess(vram: int, ram: int, free_disk: int, download: int,
 
     if vram and vram < 7e9:
         worse("hard")
-        notes.append(f"{vram/1e9:.0f} GB of VRAM is under the 8 GB this app "
+        notes.append(f"{vram/GIB:.0f} GB of VRAM is under the 8 GB this app "
                      "is tuned for. It will install and queue, but every "
                      "step swaps weights and a shot can take an hour.")
     elif vram and vram < 12e9:
         worse("tight")
-        notes.append(f"{vram/1e9:.0f} GB of VRAM — proven workable: with "
+        notes.append(f"{vram/GIB:.0f} GB of VRAM — proven workable: with "
                      "low-VRAM mode the INT8 weights stream from system RAM "
                      "and the 8-step turbo keeps a shot to minutes on an "
                      "RTX 4060. Start at 0.2 MP and upscale afterwards.")
     elif vram and vram < 20e9:
         worse("tight")
-        notes.append(f"{vram/1e9:.0f} GB of VRAM — comfortable with "
+        notes.append(f"{vram/GIB:.0f} GB of VRAM — comfortable with "
                      "offloading; higher megapixels are on the table.")
+    if vram and vram < 20e9 and not lowvram:
+        # invariant: --lowvram is the only reason the 21 GB DiT loads at all
+        worse("hard")
+        notes.append("Low-VRAM mode is off. The 21 GB model cannot sit in "
+                     f"{vram/GIB:.0f} GB of VRAM, so it will stop out of "
+                     "memory — turn Low-VRAM mode back on in setup.")
     if ram and peak and ram < peak * 0.7:
         worse("hard")
-        notes.append(f"{ram/1e9:.0f} GB of system RAM against a "
+        notes.append(f"{ram/GIB:.0f} GB of system RAM against a "
                      f"{peak/1e9:.0f} GB peak — the larger of DiT or text "
                      "encoder, plus the VAEs. That is not enough to page "
                      "through; expect out-of-memory stops.")
     elif ram and peak and ram < peak * 1.15:
         worse("tight")
-        notes.append(f"{ram/1e9:.0f} GB of system RAM against a "
+        notes.append(f"{ram/GIB:.0f} GB of system RAM against a "
                      f"{peak/1e9:.0f} GB peak — the bigger loads page "
                      "through disk. Slower, not impossible; a fast SSD "
                      "matters more than the number here.")
@@ -340,7 +351,8 @@ def preflight(cfg: dict) -> dict:
     clip = next((i["size"] for i in items if i["folder"] == "text_encoders"), 0)
     peak = max(dit, clip) + VIDEO_VAE["size"] + AUDIO_VAE["size"]
 
-    verdict, notes = assess(vram, ram, free_disk, download, peak)
+    verdict, notes = assess(vram, ram, free_disk, download, peak,
+                            cfg.get("lowvram", True))
     return {"vram": vram, "gpu": gpu, "ram": ram, "free_disk": free_disk,
             "download": download, "peak": peak, "verdict": verdict,
             "notes": notes, "precision": cfg.get("precision", "int8"),
@@ -940,6 +952,19 @@ def comfy_stats(url: str) -> dict | None:
     except Exception:
         pass
     return None
+
+
+def engine_lowvram(stats: dict | None) -> bool | None:
+    """Whether the engine answering was launched in low-VRAM mode.
+
+    None when its command line is not known. On an 8 GB card an engine
+    started without --lowvram (a launcher script, ComfyUI Desktop, a manual
+    `python main.py`) is the difference between a render and an OOM stop.
+    """
+    argv = [str(a) for a in (stats or {}).get("argv") or []]
+    if not argv:
+        return None
+    return any(a in ("--lowvram", "--novram") for a in argv)
 
 
 def wait_for_comfy(url: str, timeout: int = 900, on_wait=None) -> bool:

@@ -129,6 +129,32 @@ def run(slow: bool = False) -> Suite:
             pg.wait_for_selector("#feed .tile video", timeout=30000)
             s.check("the clip lands in the feed as a tile", True)
 
+            # -- the live preview in the job card ---------------------------------
+            requests.post(mock.url + "/delay", json={"seconds": 6}, timeout=10)
+            pg.fill("#description", "a slow one, to watch")
+            pg.click("#btnGenerate")
+            try:
+                pg.wait_for_selector("#feed .skel img.pv", timeout=15000)
+                pg.wait_for_function(
+                    "(() => { const i = document.querySelector('#feed .skel img.pv');"
+                    " return i && i.complete && i.naturalWidth > 0; })()",
+                    timeout=10000)
+                shown = True
+            except Exception:  # noqa: BLE001
+                shown = False
+            s.check("a live preview frame shows, decoded, in the job card", shown)
+            requests.post(mock.url + "/delay", json={"seconds": 0.4}, timeout=10)
+            pg.wait_for_function(
+                "document.querySelectorAll('#feed .tile').length >= 2",
+                timeout=30000)
+            s.check("the previewed clip still lands as a tile",
+                    not pg.query_selector("#feed .skel img.pv"))
+            # back to one tile, so the checks below see the feed they expect
+            pg.evaluate("""async () => {
+                const clips = await (await fetch('/api/clips')).json();
+                await fetch('/api/clip/' + clips[0].id, {method: 'DELETE'});
+                await loadImages(); }""")
+
             # -- continue this clip ----------------------------------------------
             # scroll clear of the sticky prompt bar, as a person would see it
             pg.eval_on_selector("#feed .tile video",

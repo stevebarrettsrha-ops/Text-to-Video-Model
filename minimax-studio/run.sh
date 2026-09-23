@@ -12,6 +12,16 @@ if [ -z "$PY" ]; then
   echo "Python 3.10 or newer was not found. Install it, then run this again." >&2
   exit 1
 fi
+# a private venv: current Debian/Ubuntu refuse pip into the system Python
+# (PEP 668, "externally-managed-environment")
+if [ ! -x .venv/bin/python ]; then
+  "$PY" -m venv .venv || {
+    echo "Could not create a virtual environment. On Debian/Ubuntu install" >&2
+    echo "python3-venv (sudo apt install python3-venv), then run this again." >&2
+    exit 1
+  }
+fi
+PY=.venv/bin/python
 echo "  Using: $($PY -c 'import sys;print(sys.executable)')"
 "$PY" -m pip install --disable-pip-version-check --quiet -r requirements.txt
 exec "$PY" server.py

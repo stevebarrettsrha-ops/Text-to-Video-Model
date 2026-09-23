@@ -31,11 +31,24 @@
 ## Nodes the workflow uses that this app does not
 
 `minimaxh3_r2v_with_upscale.json` also carries Pixaroma timer/monitor/free-VRAM
-nodes, `ResolutionSelector`, `ComfyMathExpression`, `PrimitiveFloat/String` and
-`ModelPreviewOverrideKJ`. All are canvas conveniences whose jobs the front end
-does itself (length and size maths, prompt entry, VRAM hygiene between runs), so
-their packs are deliberately not required. KJNodes and the RTX nodes are offered
-because they add something the front end cannot do.
+nodes, `ResolutionSelector`, `ComfyMathExpression` and `PrimitiveFloat/String`.
+All are canvas conveniences whose jobs the front end does itself (length and
+size maths, prompt entry, VRAM hygiene between runs), so their packs are
+deliberately not required. KJNodes and the RTX nodes are offered because they
+add something the front end cannot do.
+
+## Live preview
+
+`ModelPreviewOverrideKJ` is wired as in the workflow: on the **base** sampler's
+model only (the refine pass keeps the plain model), decoding with `taeh3` from
+`vae_approx`, `suppress_default_preview` off. The managed engine launches with
+`--preview-method auto`, or ComfyUI sends no step previews at all. Frames
+arrive as binary websocket messages (event 1 PREVIEW_IMAGE, event 4
+PREVIEW_IMAGE_WITH_METADATA naming the prompt); `take_preview` keeps only the
+newest per prompt and `/api/jobs/<id>/preview?n=` serves it, `n` changing only
+with a new frame so re-renders hit the cache. Everything degrades: no KJNodes
+or no taeh3 → no node, the clip renders the same. taeh3 is an **optional**
+download — a failure to fetch it is logged and skipped, never fatal to setup.
 
 ## Graceful degradation
 
@@ -73,6 +86,19 @@ exists to capture a frame from. Board generation reuses `collectBase()` (the
 settings popover) and `frameRef()` (the continue-clip capture); do not grow a
 second copy of either. `updateBoardJobs` refreshes only the `.bstatus` zones
 so a full re-render never eats a keystroke in a card's textarea.
+
+## Dynamic combos and the nodes' real input names
+
+The input names in `tests/object_info.json` must be the ones the reference
+workflows save in `widgets_values_named`, never a guess: `MiniMaxH3SigmaShift`
+takes `shift_video`/`shift_audio`, `ModelAttentionBackend` takes `attention`.
+Two inputs are V3 dynamic combos whose settings hang off the chosen option and
+travel in the prompt as `<combo>.<sub>`: the RTX node's
+`resize_type` → `resize_type.scale`, and the H3 latent upscaler's
+`mode` → `mode.megapixels`. `_node()` expands those from the schema (fills
+the chosen option's sub-inputs, drops the others). A stand-in built from
+guessed names once let the whole H3 upscale pass ship with a sub-input a real
+engine rejects.
 
 ## Two bugs worth not reintroducing
 

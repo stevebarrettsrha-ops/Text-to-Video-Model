@@ -23,7 +23,8 @@ from flask import Flask, jsonify, request, send_file, send_from_directory
 import bootstrap
 import manager
 from bootstrap import (APP_DIR, ComfyProcess, Progress, comfy_online,
-                       detect_comfy_dirs, load_config, save_config)
+                       comfy_port, detect_comfy_dirs, load_config, normal_url,
+                       save_config)
 from comfy import ComfyClient, ComfyError
 
 DATA_DIR = bootstrap.DATA_DIR          # honours MINIMAX_STUDIO_DATA
@@ -47,7 +48,56 @@ jobs: dict[str, dict] = {}
 jobs_lock = threading.Lock()
 gallery_lock = threading.Lock()
 board_lock = threading.Lock()
+setup_lock = threading.Lock()
 ws_progress: dict[str, dict] = {}
+# the latest live-preview frame per prompt: {"n", "mime", "data"}
+ws_preview: dict[str, dict] = {}
+
+
+def _image_mime(body: bytes) -> str:
+    if body[:3] == b"\xff\xd8\xff":
+        return "image/jpeg"
+    if body[:8] == b"\x89PNG\r\n\x1a\n":
+        return "image/png"
+    if body[:4] == b"RIFF" and body[8:12] == b"WEBP":
+        return "image/webp"
+    if body[:4] == b"GIF8":
+        return "image/gif"
+    return ""
+
+
+def take_preview(raw: bytes, current: str | None) -> None:
+    """A binary websocket frame from ComfyUI: keep it if it is a preview.
+
+    The first four bytes are the event: 1 is PREVIEW_IMAGE (then a 4-byte
+    image type, then the image), 4 is PREVIEW_IMAGE_WITH_METADATA (a 4-byte
+    length, JSON naming the prompt, then the image). Anything else is
+    ignored. Only the newest frame per prompt is held.
+    """
+    if len(raw) < 8:
+        return
+    event = int.from_bytes(raw[:4], "big")
+    pid = current
+    if event == 1:
+        body = raw[8:]
+    elif event == 4:
+        size = int.from_bytes(raw[4:8], "big")
+        try:
+            meta = json.loads(raw[8:8 + size])
+        except ValueError:
+            return
+        pid = meta.get("prompt_id") or current
+        body = raw[8 + size:]
+    else:
+        return
+    mime = _image_mime(body)
+    if not pid or not mime:
+        return
+    prev = ws_preview.get(pid)
+    ws_preview[pid] = {"n": (prev["n"] + 1) if prev else 1,
+                       "mime": mime, "data": body}
+    while len(ws_preview) > 16:                  # never a leak of stale frames
+        ws_preview.pop(next(iter(ws_preview)))
 
 
 # --------------------------------------------------------------------------- #
@@ -118,6 +168,9 @@ def ws_listener() -> None:
             current = None
             while True:
                 raw = ws.recv()
+                if isinstance(raw, (bytes, bytearray)):
+                    take_preview(bytes(raw), current)
+                    continue
                 if not isinstance(raw, str):
                     continue
                 msg = json.loads(raw)
@@ -130,6 +183,7 @@ def ws_listener() -> None:
                         value=data.get("value", 0), max=data.get("max", 0))
                 elif mtype in ("execution_success", "execution_error") and pid:
                     ws_progress.pop(pid, None)
+                    ws_preview.pop(pid, None)
         except Exception:
             time.sleep(4)
 
@@ -139,6 +193,8 @@ def ws_listener() -> None:
 # --------------------------------------------------------------------------- #
 def run_job(job_id: str, params: dict) -> None:
     def set_state(**kw):
+        if kw.get("status", "running") != "running":
+            kw["finished"] = time.time()
         with jobs_lock:
             jobs[job_id].update(kw)
 
@@ -158,7 +214,7 @@ def run_job(job_id: str, params: dict) -> None:
             with jobs_lock:
                 cancelled = jobs[job_id].get("cancelled")
             if cancelled:
-                client.interrupt()
+                client.cancel(prompt_id)
                 set_state(status="cancelled", stage="Cancelled")
                 return
             err = client.failed(prompt_id)
@@ -230,6 +286,30 @@ def run_job(job_id: str, params: dict) -> None:
 # --------------------------------------------------------------------------- #
 # shell
 # --------------------------------------------------------------------------- #
+LOCAL_HOSTS = ("127.0.0.1", "localhost", "[::1]")
+
+
+@app.before_request
+def local_only():
+    """Only this machine's own pages may drive the app.
+
+    Binding to 127.0.0.1 is not enough: any site the person visits can post
+    to it, and DNS rebinding lets one read the answers — and the app runs
+    pip, git and process kills. The Host must name this machine, and a
+    request that changes something must come from this app's own page.
+    """
+    host = (request.host or "").rsplit(":", 1)[0].lower() \
+        if not (request.host or "").startswith("[") \
+        else (request.host or "").split("]")[0].lower() + "]"
+    if host not in LOCAL_HOSTS:
+        return jsonify({"error": "MiniMax Studio only answers to localhost."}), 403
+    if request.method not in ("GET", "HEAD", "OPTIONS"):
+        origin = request.headers.get("Origin")
+        if origin and origin.rstrip("/") != request.host_url.rstrip("/") \
+                and origin.rstrip("/") not in (
+                    f"http://{h}:{PORT}" for h in LOCAL_HOSTS):
+            return jsonify({"error": "Cross-site request refused."}), 403
+
 @app.get("/")
 def index():
     return send_from_directory(WEB_DIR, "index.html")
@@ -290,6 +370,10 @@ def api_status():
                 if cfg.get("comfy_dir") else "")
         payload["engine_mismatch"] = bool(
             argv and want and want not in argv.replace("\\", "/").lower())
+        # low-VRAM mode is configured, but the engine answering lacks it
+        payload["engine_lowvram_off"] = bool(
+            cfg.get("lowvram", True)
+            and bootstrap.engine_lowvram(stats) is False)
         payload["engine_managed"] = comfy_proc.alive()
     payload["ready"] = bool(online and payload["nodes_ready"] and not missing)
     return jsonify(payload)
@@ -297,16 +381,19 @@ def api_status():
 
 @app.post("/api/setup/start")
 def api_setup_start():
-    if progress.running:
-        return jsonify({"error": "Setup is already running."}), 409
+    with setup_lock:
+        if progress.running:
+            return jsonify({"error": "Setup is already running."}), 409
+        progress.__init__()
+        progress.running = True       # claimed here, so a double click is a 409
     b = request.get_json(silent=True) or {}
     for key in ("comfy_url", "models_dir", "precision", "turbo",
                 "lowvram", "want_kjnodes", "want_rtx", "want_manager"):
         if key in b:
             cfg[key] = b[key]
-    client.url = cfg["comfy_url"].rstrip("/")
+    cfg["comfy_url"] = normal_url(cfg["comfy_url"])
+    client.url = cfg["comfy_url"]
     save_config(cfg)
-    progress.__init__()
     threading.Thread(target=bootstrap.run_setup,
                      args=(cfg, progress, comfy_proc, b.get("comfy_dir", ""),
                            b.get("mode", "auto")), daemon=True).start()
@@ -378,8 +465,14 @@ def take_over_port(url: str, port: int):
             cmd = bootstrap.pid_cmdline(pid)
             _note(f"Port {port} is held by pid {pid}"
                   + (f": {cmd[:120]}" if cmd else " (command line unreadable)"))
-            if cmd and not any(k in cmd.lower()
-                               for k in ("python", "main.py", "comfy")):
+            if not cmd:
+                # never kill what cannot be identified
+                return None, (f"Port {port} is held by pid {pid}, whose "
+                              "command line could not be read, so it was "
+                              "left alone. Close it yourself, or point "
+                              "Settings at a different address.")
+            if not any(k in cmd.lower()
+                       for k in ("python", "main.py", "comfy")):
                 return None, (f"Port {port} is held by something that does "
                               f"not look like ComfyUI ({cmd[:90]}). Close it "
                               "yourself, or point Settings at a different "
@@ -437,7 +530,7 @@ def api_comfy_start():
     if not cfg.get("comfy_dir") or not py:
         return jsonify({"error": "Run setup first."}), 400
     comfy_proc.start(py, Path(cfg["comfy_dir"]),
-                     int(cfg["comfy_url"].rsplit(":", 1)[-1]), progress,
+                     comfy_port(cfg["comfy_url"]), progress,
                      cfg.get("lowvram", True))
     _refresh_schema_when_up()
     return jsonify({"ok": True})
@@ -456,7 +549,7 @@ def api_comfy_restart():
     asked people to hunt a windowless python in Task Manager.
     """
     url = cfg["comfy_url"]
-    port = int(url.rsplit(":", 1)[-1])
+    port = comfy_port(url)
     py = bootstrap.comfy_python(cfg)
     can_start = bool(cfg.get("comfy_dir") and py)
 
@@ -516,7 +609,8 @@ def api_config():
                 "want_kjnodes", "want_rtx", "want_manager"):
         if key in b:
             cfg[key] = b[key]
-    client.url = cfg["comfy_url"].rstrip("/")
+    cfg["comfy_url"] = normal_url(cfg["comfy_url"])
+    client.url = cfg["comfy_url"]
     save_config(cfg)
     return jsonify({"ok": True})
 
@@ -685,13 +779,17 @@ def api_generate():
         return jsonify({"error": "ComfyUI is not running. Start it from the "
                                  "Engine page."}), 503
     created = []
-    for _ in range(runs):
+    for run in range(runs):
         job_id = uuid.uuid4().hex[:12]
+        job_params = dict(params)
+        # a fixed seed gives each run its own neighbour, not the same clip 4x
+        if str(params.get("seed", "")).strip().lstrip("-").isdigit():
+            job_params["seed"] = int(params["seed"]) + run
         with jobs_lock:
             jobs[job_id] = {"id": job_id, "status": "running", "pct": 0,
                             "stage": "Starting", "created": time.time(),
                             "title": params.get("title") or title_from(params)}
-        threading.Thread(target=run_job, args=(job_id, dict(params)),
+        threading.Thread(target=run_job, args=(job_id, job_params),
                          daemon=True).start()
         created.append(job_id)
         time.sleep(0.2)
@@ -702,8 +800,29 @@ def api_generate():
 def api_jobs():
     with jobs_lock:
         active = [j for j in jobs.values()
-                  if j["status"] == "running" or time.time() - j["created"] < 180]
-        return jsonify(sorted(active, key=lambda j: j["created"], reverse=True))
+                  if j["status"] == "running"
+                  or time.time() - j.get("finished", j["created"]) < 180]
+        out = []
+        for j in sorted(active, key=lambda j: j["created"], reverse=True):
+            frame = ws_preview.get(j.get("prompt_id") or "") \
+                if j["status"] == "running" else None
+            out.append(dict(j, preview=frame["n"]) if frame else j)
+        return jsonify(out)
+
+
+@app.get("/api/jobs/<job_id>/preview")
+def api_job_preview(job_id: str):
+    """The newest live-preview frame of a running job."""
+    with jobs_lock:
+        job = jobs.get(job_id)
+        pid = job.get("prompt_id") if job else None
+    frame = ws_preview.get(pid or "")
+    if not frame:
+        return jsonify({"error": "No preview yet."}), 404
+    resp = app.response_class(frame["data"], mimetype=frame["mime"])
+    # each frame has its own ?n= URL, so a cached one is never stale
+    resp.headers["Cache-Control"] = "private, max-age=300"
+    return resp
 
 
 @app.post("/api/jobs/<job_id>/cancel")
@@ -715,7 +834,7 @@ def api_job_cancel(job_id: str):
         if job["status"] != "running":
             return jsonify({"error": "That job has already finished."}), 409
         job["cancelled"] = True
-    client.interrupt()
+    # run_job sees the flag within a second and stops this prompt alone
     return jsonify({"ok": True})
 
 
@@ -880,7 +999,7 @@ def ensure_engine_at_boot() -> None:
     if not cfg.get("comfy_dir") or not py:
         return
     url = cfg["comfy_url"]
-    port = int(url.rsplit(":", 1)[-1])
+    port = comfy_port(url)
 
     if not comfy_online(url):
         _note("Starting ComfyUI…")
@@ -917,6 +1036,8 @@ def ensure_engine_at_boot() -> None:
     want = str(Path(cfg["comfy_dir"])).replace("\\", "/").lower()
     if argv and want and want not in argv.replace("\\", "/").lower():
         reasons.append("a different install is answering the address")
+    if cfg.get("lowvram", True) and bootstrap.engine_lowvram(stats) is False:
+        reasons.append("it was started without low-VRAM mode (--lowvram)")
 
     if not reasons:
         _note(f"Adopting the ComfyUI already running at {url}.")

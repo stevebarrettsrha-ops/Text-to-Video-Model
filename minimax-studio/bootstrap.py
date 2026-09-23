@@ -168,6 +168,21 @@ def missing_models(models_dir: Path, cfg: dict) -> list[dict]:
     return [m for m in model_set(cfg) if not model_path(models_dir, m).exists()]
 
 
+def extra_models(cfg: dict) -> list[dict]:
+    """Optional files: taeh3, the tiny VAE the live preview decodes with.
+    Only wanted with KJNodes, whose preview node is what uses it."""
+    if not cfg.get("want_kjnodes", True):
+        return []
+    return [{**PREVIEW_TAE, "size": PREVIEW_TAE.get("size", 0),
+             "role": "optional",
+             "why": "Live preview while a clip renders (KJNodes)."}]
+
+
+def missing_extras(models_dir: Path, cfg: dict) -> list[dict]:
+    return [m for m in extra_models(cfg)
+            if not model_path(models_dir, m).exists()]
+
+
 def node_installed(comfy_dir: Path, node: dict) -> bool:
     return (comfy_dir / "custom_nodes" / node["dir"]).is_dir()
 
@@ -262,8 +277,13 @@ def _vram_bytes(python: str) -> tuple[int, str]:
         return 0, ""
 
 
+# what people call "8 GB" or "32 GB" is GiB: an RTX 4060 reports 8.59e9
+# bytes, which divided by 1e9 read as "9 GB"
+GIB = 1024 ** 3
+
+
 def assess(vram: int, ram: int, free_disk: int, download: int,
-           peak: int) -> tuple[str, list[str]]:
+           peak: int, lowvram: bool = True) -> tuple[str, list[str]]:
     """The verdict from the measurements — calibrated against a real run.
 
     An RTX 4060 (8 GB) with 32 GB of RAM renders H3 shots in minutes with
@@ -283,28 +303,34 @@ def assess(vram: int, ram: int, free_disk: int, download: int,
 
     if vram and vram < 7e9:
         worse("hard")
-        notes.append(f"{vram/1e9:.0f} GB of VRAM is under the 8 GB this app "
+        notes.append(f"{vram/GIB:.0f} GB of VRAM is under the 8 GB this app "
                      "is tuned for. It will install and queue, but every "
                      "step swaps weights and a shot can take an hour.")
     elif vram and vram < 12e9:
         worse("tight")
-        notes.append(f"{vram/1e9:.0f} GB of VRAM — proven workable: with "
+        notes.append(f"{vram/GIB:.0f} GB of VRAM — proven workable: with "
                      "low-VRAM mode the INT8 weights stream from system RAM "
                      "and the 8-step turbo keeps a shot to minutes on an "
                      "RTX 4060. Start at 0.2 MP and upscale afterwards.")
     elif vram and vram < 20e9:
         worse("tight")
-        notes.append(f"{vram/1e9:.0f} GB of VRAM — comfortable with "
+        notes.append(f"{vram/GIB:.0f} GB of VRAM — comfortable with "
                      "offloading; higher megapixels are on the table.")
+    if vram and vram < 20e9 and not lowvram:
+        # invariant: --lowvram is the only reason the 21 GB DiT loads at all
+        worse("hard")
+        notes.append("Low-VRAM mode is off. The 21 GB model cannot sit in "
+                     f"{vram/GIB:.0f} GB of VRAM, so it will stop out of "
+                     "memory — turn Low-VRAM mode back on in setup.")
     if ram and peak and ram < peak * 0.7:
         worse("hard")
-        notes.append(f"{ram/1e9:.0f} GB of system RAM against a "
+        notes.append(f"{ram/GIB:.0f} GB of system RAM against a "
                      f"{peak/1e9:.0f} GB peak — the larger of DiT or text "
                      "encoder, plus the VAEs. That is not enough to page "
                      "through; expect out-of-memory stops.")
     elif ram and peak and ram < peak * 1.15:
         worse("tight")
-        notes.append(f"{ram/1e9:.0f} GB of system RAM against a "
+        notes.append(f"{ram/GIB:.0f} GB of system RAM against a "
                      f"{peak/1e9:.0f} GB peak — the bigger loads page "
                      "through disk. Slower, not impossible; a fast SSD "
                      "matters more than the number here.")
@@ -340,7 +366,8 @@ def preflight(cfg: dict) -> dict:
     clip = next((i["size"] for i in items if i["folder"] == "text_encoders"), 0)
     peak = max(dit, clip) + VIDEO_VAE["size"] + AUDIO_VAE["size"]
 
-    verdict, notes = assess(vram, ram, free_disk, download, peak)
+    verdict, notes = assess(vram, ram, free_disk, download, peak,
+                            cfg.get("lowvram", True))
     return {"vram": vram, "gpu": gpu, "ram": ram, "free_disk": free_disk,
             "download": download, "peak": peak, "verdict": verdict,
             "notes": notes, "precision": cfg.get("precision", "int8"),
@@ -426,7 +453,7 @@ def _run(cmd: list[str], **kw) -> subprocess.CompletedProcess:
 
 
 def _stream(cmd: list[str], on_line, cwd: str | None = None,
-            env: dict | None = None) -> int:
+            env: dict | None = None, should_cancel=None) -> int:
     r"""Run `cmd` and hand every line of its output to `on_line` as it appears.
 
     Splits on carriage returns as well as newlines: git writes its progress by
@@ -442,6 +469,13 @@ def _stream(cmd: list[str], on_line, cwd: str | None = None,
         block = proc.stdout.read1(8192)
         if not block:
             break
+        if should_cancel and should_cancel():
+            proc.terminate()
+            try:
+                proc.wait(15)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+            return proc.wait()
         buf += block
         parts = re.split(rb"[\r\n]", buf)
         buf = parts.pop()
@@ -616,6 +650,26 @@ def hf_tree(cfg: dict, repo: str, revision: str = "main") -> list[dict]:
 def download_file(cfg: dict, repo: str, path: str, dest: Path,
                   on_progress=None, should_cancel=None,
                   revision: str = "main") -> None:
+    with _writing_lock:
+        if dest in _writing:
+            raise RuntimeError(f"{dest.name} is already downloading.")
+        _writing.add(dest)
+    try:
+        _download_file(cfg, repo, path, dest, on_progress, should_cancel,
+                       revision)
+    finally:
+        with _writing_lock:
+            _writing.discard(dest)
+
+
+# one writer per .part — setup and the Models page can otherwise both append
+_writing: set[Path] = set()
+_writing_lock = threading.Lock()
+
+
+def _download_file(cfg: dict, repo: str, path: str, dest: Path,
+                   on_progress=None, should_cancel=None,
+                   revision: str = "main") -> None:
     import urllib.parse
     url = (f"{hf_endpoint(cfg)}/{repo}/resolve/{revision}/"
            + urllib.parse.quote(path))
@@ -628,17 +682,26 @@ def download_file(cfg: dict, repo: str, path: str, dest: Path,
     with requests.get(url, headers=headers, stream=True, timeout=60,
                       allow_redirects=True) as r:
         if r.status_code == 416:
-            part.replace(dest)
-            return
+            # the part already covers the file — but only trust that when the
+            # server's own size ("bytes */SIZE") agrees; otherwise start over
+            remote = r.headers.get("Content-Range", "").rsplit("/", 1)[-1]
+            if remote.isdigit() and int(remote) == have:
+                part.replace(dest)
+                return
+            part.unlink(missing_ok=True)
+            r.close()
+            return _download_file(cfg, repo, path, dest, on_progress,
+                                  should_cancel, revision)
         if r.status_code in (401, 403):
             raise RuntimeError("HuggingFace refused the download. Accept the "
                                "MiniMax H3 licence on the model page, then add "
                                "a token on the Models page.")
         r.raise_for_status()
-        total = int(r.headers.get("Content-Length", 0)) + have
         mode = "ab" if (have and r.status_code == 206) else "wb"
         if mode == "wb":
             have = 0
+        length = int(r.headers.get("Content-Length", 0))
+        total = length + have if length else 0
         got, last, started = have, 0.0, time.time()
         with open(part, mode) as fh:
             for chunk in r.iter_content(chunk_size=1024 * 1024):
@@ -654,6 +717,11 @@ def download_file(cfg: dict, repo: str, path: str, dest: Path,
                     speed = (got - have) / max(now - started, .1)
                     eta = (total - got) / speed if speed > 0 and total else 0
                     on_progress(got, total, speed, eta)
+    if total and part.stat().st_size != total:
+        # a stream that ended early; the part stays so the next try resumes
+        raise RuntimeError(f"{dest.name} stopped short at "
+                           f"{fmt_size(part.stat().st_size)} of "
+                           f"{fmt_size(total)} — try again to resume.")
     part.replace(dest)
 
 
@@ -688,6 +756,9 @@ class ComfyProcess:
             # nothing is cached between runs. Slower, but it is what makes a
             # 21 GB DiT possible on a small card at all.
             cmd += ["--lowvram", "--cache-none"]
+        # ComfyUI sends no step previews unless asked; the live preview in
+        # the app (KJ's taeh3 override, latent2rgb without it) needs them
+        cmd += ["--preview-method", "auto"]
         prog.log("Launching ComfyUI: " + " ".join(cmd))
         flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) \
             if platform.system() == "Windows" else 0
@@ -722,8 +793,23 @@ class ComfyProcess:
             except Exception:
                 try:
                     self.proc.kill()
+                    self.proc.wait(timeout=5)     # reap it: no zombie left
                 except Exception:
                     pass
+
+
+def normal_url(url: str) -> str:
+    """The ComfyUI address as stored: trimmed, no trailing slash."""
+    return str(url or "").strip().rstrip("/")
+
+
+def comfy_port(url: str) -> int:
+    """The port in a ComfyUI address; ComfyUI's own 8188 when none is given."""
+    from urllib.parse import urlsplit
+    try:
+        return urlsplit(normal_url(url)).port or 8188
+    except ValueError:
+        return 8188
 
 
 def comfy_online(url: str) -> bool:
@@ -779,8 +865,10 @@ def port_pids(port: int) -> list[int]:
             return []
         for line in out.splitlines():
             parts = line.split()
+            # the state column is translated on localised Windows, so a
+            # listener is recognised by its empty foreign address instead
             if len(parts) >= 5 and parts[0] == "TCP" \
-                    and parts[3] == "LISTENING" \
+                    and parts[2] in ("0.0.0.0:0", "[::]:0") \
                     and parts[1].rsplit(":", 1)[-1] == str(port):
                 try:
                     pids.add(int(parts[4]))
@@ -803,10 +891,14 @@ def port_pids(port: int) -> list[int]:
 def pid_cmdline(pid: int) -> str:
     try:
         if platform.system() == "Windows":
-            out = _run(["wmic", "process", "where", f"processid={pid}",
-                        "get", "commandline"], timeout=25).stdout
-            lines = [ln.strip() for ln in out.splitlines()
-                     if ln.strip() and "CommandLine" not in ln]
+            # wmic is gone from current Windows 11; CIM through PowerShell
+            # is the supported way to read another process's command line
+            out = _run(["powershell", "-NoProfile", "-NonInteractive",
+                        "-Command",
+                        f"(Get-CimInstance Win32_Process -Filter "
+                        f"'ProcessId={int(pid)}').CommandLine"],
+                       timeout=25).stdout
+            lines = [ln.strip() for ln in out.splitlines() if ln.strip()]
             return lines[0] if lines else ""
         cmd = Path(f"/proc/{pid}/cmdline")
         if cmd.exists():
@@ -880,6 +972,19 @@ def comfy_stats(url: str) -> dict | None:
     return None
 
 
+def engine_lowvram(stats: dict | None) -> bool | None:
+    """Whether the engine answering was launched in low-VRAM mode.
+
+    None when its command line is not known. On an 8 GB card an engine
+    started without --lowvram (a launcher script, ComfyUI Desktop, a manual
+    `python main.py`) is the difference between a render and an OOM stop.
+    """
+    argv = [str(a) for a in (stats or {}).get("argv") or []]
+    if not argv:
+        return None
+    return any(a in ("--lowvram", "--novram") for a in argv)
+
+
 def wait_for_comfy(url: str, timeout: int = 900, on_wait=None) -> bool:
     """Poll until ComfyUI answers. `on_wait(elapsed, timeout)` runs each pass —
     there is no percentage to give here, only how long it has been waiting."""
@@ -919,7 +1024,8 @@ def pip_has_raw_progress(python: str) -> bool:
     return _PIP_RAW_OK[python]
 
 
-def pip_install(python: str, args: list[str], log, on_pct=None) -> None:
+def pip_install(python: str, args: list[str], log, on_pct=None,
+                should_cancel=None) -> None:
     """Install with pip. `on_pct(pct|None, detail)` is called as it downloads."""
     import urllib.parse
     cmd = [python, "-m", "pip", "install"]
@@ -962,7 +1068,9 @@ def pip_install(python: str, args: list[str], log, on_pct=None) -> None:
                 # torch takes minutes over it, so say what is happening.
                 on_pct(None, text[:120])
 
-    if _stream(cmd, line) != 0:
+    if _stream(cmd, line, should_cancel=should_cancel) != 0:
+        if should_cancel and should_cancel():
+            raise RuntimeError("Cancelled.")
         raise RuntimeError("pip install failed — see the log.")
     if "pip" in args:
         # pip just upgraded itself, so whether it can report progress may have
@@ -1160,7 +1268,7 @@ def run_setup(cfg: dict, prog: Progress, comfy: ComfyProcess,
             prog.finish("deps", f"Installed into {Path(cfg['python']).name}")
 
         prog.begin("models")
-        todo = missing_models(models_dir, cfg)
+        todo = missing_models(models_dir, cfg) + missing_extras(models_dir, cfg)
         if not todo:
             prog.finish("models", "Everything is already downloaded")
         else:
@@ -1199,7 +1307,17 @@ def run_setup(cfg: dict, prog: Progress, comfy: ComfyProcess,
                 prog.track("models",
                            (done_bytes / grand * 100) if grand else None,
                            f"{head} — starting…")
-                download_file(cfg, item["repo"], item["path"], dest, on_prog)
+                try:
+                    download_file(cfg, item["repo"], item["path"], dest,
+                                  on_prog)
+                except Exception as exc:  # noqa: BLE001
+                    if item.get("role") != "optional":
+                        raise
+                    # the preview decoder is a nicety: never fail setup on it
+                    prog.log(f"Skipped {item['name']} ({exc}) — clips still "
+                             "render, without the live preview.")
+                    done_bytes += size
+                    continue
                 done_bytes += size or (dest.stat().st_size
                                        if dest.exists() else 0)
                 prog.log(f"Downloaded {item['name']}")
@@ -1215,7 +1333,7 @@ def run_setup(cfg: dict, prog: Progress, comfy: ComfyProcess,
             prog.log("ComfyUI is already running — restart it so it picks up the "
                      "new nodes and weights.")
         else:
-            port = int(url.rsplit(":", 1)[-1])
+            port = comfy_port(url)
             comfy.start(cfg["python"], Path(cfg["comfy_dir"]), port, prog,
                         cfg.get("lowvram", True))
 

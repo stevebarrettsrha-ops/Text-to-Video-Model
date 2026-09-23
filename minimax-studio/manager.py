@@ -104,6 +104,10 @@ def spawn(kind: str, title: str, fn, meta: dict | None = None) -> Task:
             if task.state == "running":
                 task.set(state="done", pct=100)
         except Exception as exc:  # noqa: BLE001
+            if task.cancel:
+                # a cancelled command exits non-zero; that is not a failure
+                task.set(state="cancelled", detail="Cancelled")
+                return
             task.log(f"FAILED: {exc}")
             task.set(state="error", detail=str(exc))
 
@@ -124,6 +128,11 @@ def stream(cmd: list[str], task: Task, keep: tuple[str, ...] = ()) -> int:
             task.log(line[:220])
         if task.cancel:
             proc.terminate()
+            try:
+                proc.wait(10)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
             task.set(state="cancelled", detail="Cancelled")
             return 1
     return proc.wait()
@@ -215,7 +224,7 @@ def dependencies(cfg: dict, client=None) -> list[dict]:
             try:
                 d = _json.loads(out.splitlines()[-1])
                 if d["cuda"]:
-                    gb = d["vram"] / 1e9
+                    gb = d["vram"] / 1024 ** 3     # GiB: an 8 GB card, not "9 GB"
                     # 8 GB is the proven floor (RTX 4060, this app's defaults)
                     state = "ok" if gb >= 7 else "warn"
                     detail = f"torch {d['v']} — {d['dev']}, {gb:.0f} GB"
@@ -249,7 +258,7 @@ def dependencies(cfg: dict, client=None) -> list[dict]:
             items.append({"id": "models", "label": "MiniMax H3 weights",
                           "state": "ok",
                           "detail": f"All five files present "
-                                    f"({cfg.get('precision', 'fp8')}).",
+                                    f"({cfg.get('precision', 'int8')}).",
                           "action": "models"})
     else:
         items.append({"id": "models", "label": "MiniMax H3 weights",
@@ -316,7 +325,8 @@ def _install_comfyui(task: Task, cfg: dict) -> None:
     target = Path(cfg["comfy_dir"]) if cfg.get("comfy_dir") else APP_DIR / "ComfyUI"
     if (target / "main.py").exists():
         task.set(detail="Updating ComfyUI…")
-        stream(["git", "-C", str(target), "pull", "--ff-only"], task)
+        if stream(["git", "-C", str(target), "pull", "--ff-only"], task) != 0:
+            raise RuntimeError("git pull failed — see the log.")
     else:
         task.set(detail="Downloading ComfyUI…")
         if stream(["git", "clone", "--depth", "1", bootstrap.COMFY_REPO,
@@ -340,7 +350,8 @@ def _install_node(task: Task, cfg: dict, node: dict) -> None:
     reqs = path / "requirements.txt"
     if py and reqs.exists():
         task.set(detail="Installing its requirements…")
-        bootstrap.pip_install(py, ["-r", str(reqs)], task.log)
+        bootstrap.pip_install(py, ["-r", str(reqs)], task.log,
+                              should_cancel=lambda: task.cancel)
     task.set(detail="Installed. Restart ComfyUI so it loads the node.")
 
 
@@ -366,14 +377,19 @@ def _install_torch(task: Task, cfg: dict, opts: dict) -> None:
     bootstrap.save_config(cfg)
     index = bootstrap.torch_index(cfg)
     task.set(detail="Installing PyTorch — this is the long one…")
-    bootstrap.pip_install(str(target), ["--upgrade", "pip", "wheel"], task.log)
-    args = ["torch", "torchvision"]
+    bootstrap.pip_install(str(target), ["--upgrade", "pip", "wheel"], task.log,
+                          should_cancel=lambda: task.cancel)
+    # torchaudio from the same index, or requirements.txt pulls a PyPI build
+    # that can replace the CUDA torch; VAEDecodeAudio needs it either way
+    args = ["torch", "torchvision", "torchaudio"]
     if index:
         args += ["--index-url", index]
-    bootstrap.pip_install(str(target), args, task.log)
+    bootstrap.pip_install(str(target), args, task.log,
+                          should_cancel=lambda: task.cancel)
     task.set(detail="Installing ComfyUI requirements…")
     bootstrap.pip_install(str(target),
-                          ["-r", str(comfy_dir / "requirements.txt")], task.log)
+                          ["-r", str(comfy_dir / "requirements.txt")], task.log,
+                          should_cancel=lambda: task.cancel)
     task.set(detail="PyTorch installed.")
 
 
@@ -449,9 +465,11 @@ def download_set(cfg: dict) -> list[Task]:
     if not root:
         raise RuntimeError("Set the ComfyUI models folder first.")
     tasks = []
-    for item in bootstrap.missing_models(root, cfg):
-        tasks.append(hf_download(cfg, cfg.get("hf_repo") or MODEL_REPO,
-                                 f"{item['folder']}/{item['name']}",
+    for item in (bootstrap.missing_models(root, cfg)
+                 + bootstrap.missing_extras(root, cfg)):
+        # each file names its own repo and path: the 4-step turbo LoRA sits at
+        # the root of a different repo, and hf_repo is whatever was browsed last
+        tasks.append(hf_download(cfg, item["repo"], item["path"],
                                  item["folder"]))
     return tasks
 
@@ -507,9 +525,10 @@ def delete_lora(cfg: dict, name: str) -> None:
         raise RuntimeError("No models folder is set.")
     root = (Path(cfg["models_dir"]) / "loras").resolve()
     target = (root / name).resolve()
-    if not str(target).startswith(str(root)):
+    # a string prefix would let "../loras_old/x" through
+    if target == root or not target.is_relative_to(root):
         raise RuntimeError("That path is outside the LoRA folder.")
-    if not target.exists():
+    if not target.is_file():
         raise RuntimeError("That file is already gone.")
     target.unlink()
 

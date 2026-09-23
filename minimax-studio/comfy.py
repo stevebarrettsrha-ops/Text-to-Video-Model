@@ -41,6 +41,7 @@ SIGMA_SHIFT = "MiniMaxH3SigmaShift"
 ATTENTION = "ModelAttentionBackend"
 UPSCALER = "MinimaxH3LatentUpscaler3D"
 RTX_UPSCALE = "RTXVideoSuperResolution"
+PREVIEW = "ModelPreviewOverrideKJ"
 
 
 class ComfyError(RuntimeError):
@@ -182,7 +183,15 @@ class ComfyClient:
         return {"r2v": self.has(R2V), "sigma_shift": self.has(SIGMA_SHIFT),
                 "attention": self.has(ATTENTION), "upscaler": self.has(UPSCALER),
                 "rtx": self.has(RTX_UPSCALE), "lora": self.has("LoraLoaderModelOnly"),
-                "preview": self.has("ModelPreviewOverrideKJ")}
+                "preview": self.has(PREVIEW) and bool(self.preview_vaes())}
+
+    def preview_vaes(self) -> list[str]:
+        """The tiny VAEs the KJ preview node can decode with (taeh3 for H3)."""
+        for name in ("tiny_vae", "vae_name"):
+            vals = self._enum(PREVIEW, name)
+            if vals:
+                return vals
+        return []
 
     # ------------------------------------------------------------------ #
     # picking files
@@ -245,11 +254,68 @@ class ComfyClient:
                 return low[c.lower()]
         return None
 
+    @staticmethod
+    def _dynamic_options(definition) -> dict:
+        """A V3 dynamic combo's options: {key: {sub_input: definition}}.
+
+        Newer nodes (the RTX upscaler's resize_type, the H3 latent
+        upscaler's mode) hang settings off a dropdown. The prompt carries
+        them as "<combo>.<sub>" — resize_type.scale, mode.megapixels — and
+        only for the option chosen; a missing one is a rejected prompt.
+        """
+        if not isinstance(definition, (list, tuple)) or len(definition) < 2:
+            return {}
+        kind, opts = definition[0], definition[1]
+        if not (isinstance(kind, str) and kind.upper().startswith(
+                "COMFY_DYNAMICCOMBO") and isinstance(opts, dict)):
+            return {}
+        out = {}
+        for option in opts.get("options") or []:
+            if not isinstance(option, dict) or "key" not in option:
+                continue
+            ins = option.get("inputs") or {}
+            merged = {}
+            if "required" in ins or "optional" in ins:
+                merged.update(ins.get("required") or {})
+                merged.update(ins.get("optional") or {})
+            else:
+                merged.update(ins)
+            out[option["key"]] = merged
+        return out
+
+    def _default(self, definition):
+        """(True, value) for an input ComfyUI would want filled, else (False, None)."""
+        if not isinstance(definition, (list, tuple)) or not definition:
+            return False, None
+        kind = definition[0]
+        opts = definition[1] if len(definition) > 1 else {}
+        if not isinstance(opts, dict):
+            opts = {}
+        combo = self._combo_options(definition)
+        if combo:
+            # both combo schemas — a V3 combo left unfilled is how a
+            # required ref_image_size went missing on a real engine
+            return True, opts.get("default", combo[0])
+        if kind in ("INT", "FLOAT", "STRING", "BOOLEAN"):
+            if "default" in opts:
+                return True, opts["default"]
+            if kind == "STRING":
+                return True, ""
+        return False, None
+
     def _node(self, class_type: str, wanted: dict) -> dict:
         spec = self.node_inputs(class_type)
+        dynamic = {name: self._dynamic_options(d) for name, d in spec.items()}
+        dynamic = {k: v for k, v in dynamic.items() if v}
+        # sub-inputs are matchable by their prompt name, "<combo>.<sub>"
+        available = dict(spec)
+        for name, options in dynamic.items():
+            for subs in options.values():
+                for sub, d in subs.items():
+                    available.setdefault(f"{name}.{sub}", d)
         inputs: dict = {}
         for key, want in wanted.items():
-            name = self._match(spec, want["names"])
+            name = self._match(available, want["names"])
             if name is None:
                 if want.get("required"):
                     raise ComfyError(
@@ -260,22 +326,21 @@ class ComfyClient:
         for name, definition in spec.items():
             if name in inputs or name == "control_after_generate":
                 continue
-            if not isinstance(definition, (list, tuple)) or not definition:
-                continue
-            kind = definition[0]
-            opts = definition[1] if len(definition) > 1 else {}
-            if not isinstance(opts, dict):
-                opts = {}
-            combo = self._combo_options(definition)
-            if combo:
-                # both combo schemas — a V3 combo left unfilled is how a
-                # required ref_image_size went missing on a real engine
-                inputs[name] = opts.get("default", combo[0] if combo else "")
-            elif kind in ("INT", "FLOAT", "STRING", "BOOLEAN"):
-                if "default" in opts:
-                    inputs[name] = opts["default"]
-                elif kind == "STRING":
-                    inputs[name] = ""
+            has, value = self._default(definition)
+            if has:
+                inputs[name] = value
+        # the chosen option's sub-inputs, filled; other options' dropped
+        for name, options in dynamic.items():
+            chosen = options.get(inputs.get(name), {})
+            for key in [k for k in inputs if k.startswith(name + ".")]:
+                if key[len(name) + 1:] not in chosen:
+                    del inputs[key]
+            for sub, definition in chosen.items():
+                full = f"{name}.{sub}"
+                if full not in inputs:
+                    has, value = self._default(definition)
+                    if has:
+                        inputs[full] = value
         return {"class_type": class_type, "inputs": inputs}
 
     def build(self, p: dict) -> dict:
@@ -332,11 +397,29 @@ class ComfyClient:
         if self.has(SIGMA_SHIFT):
             g["7"] = self._node(SIGMA_SHIFT, {
                 "model": {"names": ["model"], "value": model_ref, "required": True},
-                "shift": {"names": ["shift", "sigma_shift"],
+                # the node calls them shift_video and shift_audio
+                "shift": {"names": ["shift_video", "shift", "sigma_shift"],
                           "value": float(p.get("shift", 6))},
-                "shift_2": {"names": ["shift_2", "shift2"],
+                "shift_2": {"names": ["shift_audio", "shift_2", "shift2"],
                             "value": float(p.get("shift_2", 3))}})
             model_ref = ["7", 0]
+
+        # live preview, as the workflow wires it: KJ's override on the base
+        # sampler's model, decoding each step with taeh3. The refine pass
+        # keeps the plain model, as in the workflow.
+        sample_ref = model_ref
+        tae = self._pick(self.preview_vaes(), "", ["taeh3"]) \
+            if p.get("preview", True) and self.has(PREVIEW) else ""
+        if tae:
+            g["8"] = self._node(PREVIEW, {
+                "model": {"names": ["model"], "value": model_ref,
+                          "required": True},
+                "tiny_vae": {"names": ["tiny_vae", "vae_name"], "value": tae,
+                             "required": True},
+                "suppress": {"names": ["suppress_default_preview"],
+                             "value": False},
+                "fps": {"names": ["preview_fps"], "value": fps}})
+            sample_ref = ["8", 0]
 
         # Reference images preserve subjects and appearance. A reference video
         # contributes its decoded frame sequence through ref_video_0, giving H3
@@ -395,7 +478,7 @@ class ComfyClient:
                              "required": True}})
 
         g["22"] = self._node("KSampler", {
-            "model": {"names": ["model"], "value": model_ref, "required": True},
+            "model": {"names": ["model"], "value": sample_ref, "required": True},
             "positive": {"names": ["positive"], "value": ["20", 0],
                          "required": True},
             "negative": {"names": ["negative"], "value": ["21", 0],
@@ -443,7 +526,8 @@ class ComfyClient:
         return {"prompt": g, "seed": seed, "files": files, "length": length,
                 "width": width, "height": height, "fps": fps,
                 "seconds": round(length / fps, 2), "note": note,
-                "upscaled": bool(note == "")and bool(p.get("upscale"))}
+                "upscaled": bool(note == "")and bool(p.get("upscale")),
+                "preview": bool(tae)}
 
     def _add_upscale(self, g: dict, latent_ref: list, model_ref: list,
                      p: dict, seed: int):
@@ -463,14 +547,28 @@ class ComfyClient:
         g["40"] = self._node(sep, {
             "latent": {"names": ["av_latent", "latent", "samples"],
                        "value": latent_ref, "required": True}})
-        g["41"] = self._node(UPSCALER, {
+        wanted = {
             "model": {"names": ["model_name", "upscaler", "ckpt_name", "model"],
                       "value": models[0], "required": True},
             "latent": {"names": ["latent", "samples"], "value": ["40", 0],
                        "required": True},
-            "mode": {"names": ["resize_type", "mode"], "value": "megapixels"},
-            "megapixels": {"names": ["megapixels", "value"],
-                           "value": float(p.get("upscale_mp") or 0.6)}})
+            "mode": {"names": ["mode", "resize_type"], "value": "megapixels"},
+            # a dynamic combo: the target size lives at mode.megapixels
+            "megapixels": {"names": ["mode.megapixels",
+                                     "resize_type.megapixels", "megapixels",
+                                     "value"],
+                           "value": float(p.get("upscale_mp") or 0.6)},
+            "align": {"names": ["align", "multiple_of"], "value": 32},
+            # chunked over time: the whole clip's latent never sits in VRAM
+            "chunking": {"names": ["enable_temporal_chunking", "use_tiling"],
+                         "value": True},
+        }
+        # the workflow's low-VRAM choices, set only where this node offers them
+        for key, value in (("force_unload", "cuda"), ("device", "cuda"),
+                           ("precision", "fp16")):
+            if value in self._enum(UPSCALER, key):
+                wanted[key] = {"names": [key], "value": value}
+        g["41"] = self._node(UPSCALER, wanted)
         g["42"] = self._node(cat, {
             "video": {"names": ["video_latent", "latent", "samples"],
                       "value": ["41", 0], "required": True},
@@ -542,6 +640,29 @@ class ComfyClient:
         except Exception:
             pass
 
+    def cancel(self, prompt_id: str) -> None:
+        """Stop this prompt and only this one.
+
+        A bare /interrupt stops whatever is running, which may be another
+        job; a prompt still waiting is taken off the queue instead.
+        """
+        try:
+            r = requests.get(f"{self.url}/queue", timeout=10)
+            r.raise_for_status()
+            q = r.json()
+        except Exception:
+            return
+        running = {e[1] for e in q.get("queue_running") or []
+                   if isinstance(e, list) and len(e) > 1}
+        if prompt_id in running:
+            self.interrupt()
+        else:
+            try:
+                requests.post(f"{self.url}/queue",
+                              json={"delete": [prompt_id]}, timeout=10)
+            except Exception:
+                pass
+
     def history(self, prompt_id: str) -> dict:
         r = requests.get(f"{self.url}/history/{prompt_id}", timeout=20)
         r.raise_for_status()
@@ -589,7 +710,7 @@ class ComfyClient:
         files = {"image": (file_storage.filename, file_storage.stream,
                            file_storage.mimetype or "application/octet-stream")}
         r = requests.post(f"{self.url}/upload/image", files=files,
-                          data={"type": "input", "overwrite": "true"}, timeout=600)
+                          data={"type": "input", "overwrite": "false"}, timeout=600)
         r.raise_for_status()
         data = r.json()
         name = data.get("name") or file_storage.filename

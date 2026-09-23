@@ -213,4 +213,58 @@ def run(slow: bool = False) -> Suite:
             said, "stopped")
     s.equal("and already gone for one that was never there",
             bootstrap.kill_pid(sleeper.pid), "already gone")
+
+    # -- an 8 GB card, as it reports itself -----------------------------------
+    rtx4060 = 8_585_216_000                    # torch total_memory, in bytes
+    verdict, notes = bootstrap.assess(rtx4060, 32 * 1024 ** 3, 10**12,
+                                      50e9, 33e9)
+    s.equal("an RTX 4060 + 32 GB is tight, as calibrated", verdict, "tight")
+    s.check("and it reads as 8 GB, not 9", notes[0].startswith("8 GB"))
+    verdict, notes = bootstrap.assess(rtx4060, 32 * 1024 ** 3, 10**12,
+                                      50e9, 33e9, lowvram=False)
+    s.check("without low-VRAM mode an 8 GB card is hard, and says why",
+            verdict == "hard" and any("Low-VRAM" in n for n in notes))
+    s.equal("the flag is read from the engine's own argv",
+            [bootstrap.engine_lowvram({"argv": ["main.py", "--lowvram"]}),
+             bootstrap.engine_lowvram({"argv": ["main.py"]}),
+             bootstrap.engine_lowvram({})], [True, False, None])
+
+    # -- the preview decoder is optional, and only with KJNodes --------------
+    extras = bootstrap.extra_models(dict(bootstrap.DEFAULT_CONFIG))
+    s.check("taeh3 is offered for the live preview, into vae_approx",
+            [(m["name"], m["folder"], m["role"]) for m in extras]
+            == [("taeh3.safetensors", "vae_approx", "optional")])
+    s.equal("and not without KJNodes",
+            bootstrap.extra_models(dict(bootstrap.DEFAULT_CONFIG,
+                                        want_kjnodes=False)), [])
+
+    # -- the ComfyUI address, however it was typed ---------------------------
+    s.equal("a trailing slash does not break the port",
+            bootstrap.comfy_port("http://127.0.0.1:8188/"), 8188)
+    s.equal("no port means ComfyUI's own",
+            bootstrap.comfy_port("http://localhost"), 8188)
+    s.equal("an explicit port is read",
+            bootstrap.comfy_port(" http://127.0.0.1:9000 "), 9000)
+    s.equal("the stored address loses its trailing slash",
+            bootstrap.normal_url(" http://127.0.0.1:8188/ "),
+            "http://127.0.0.1:8188")
+
+    # -- download set takes each file from its own repo ----------------------
+    seen = []
+    real = manager.hf_download
+    manager.hf_download = lambda cfg, repo, path, folder: seen.append(
+        (repo, path, folder))
+    try:
+        cfg = dict(bootstrap.DEFAULT_CONFIG, turbo="4step",
+                   hf_repo="someone/else", models_dir=str(Path(
+                       __file__).resolve().parent / "no-such-models"))
+        manager.download_set(cfg)
+    finally:
+        manager.hf_download = real
+    lora = [x for x in seen if x[2] == "loras"]
+    s.check("the 4-step LoRA downloads from the turbo repo root",
+            lora == [(bootstrap.TURBO_REPO, bootstrap.TURBO_LORAS["4step"]["name"],
+                      "loras")])
+    s.check("a browsed repo does not redirect the set",
+            all(x[0] != "someone/else" for x in seen))
     return s

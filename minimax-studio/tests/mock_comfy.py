@@ -84,10 +84,32 @@ def _object_info():
     return out
 
 
-def ws_send(obj):
-    """One unmasked text frame to every connected /ws client."""
-    data = json.dumps(obj).encode()
-    head = bytearray([0x81])
+def _png(shade: int) -> bytes:
+    """A real 8x8 grey PNG — enough for a browser to decode and show."""
+    import zlib
+
+    def chunk(kind, body):
+        return (struct.pack(">I", len(body)) + kind + body
+                + struct.pack(">I", zlib.crc32(kind + body) & 0xffffffff))
+    rows = b"".join(b"\x00" + bytes([shade % 256]) * 8 for _ in range(8))
+    return (b"\x89PNG\r\n\x1a\n"
+            + chunk(b"IHDR", struct.pack(">IIBBBBB", 8, 8, 8, 0, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b""))
+
+
+def ws_preview(pid, node, step):
+    """A PREVIEW_IMAGE_WITH_METADATA frame, laid out as ComfyUI sends it."""
+    meta = json.dumps({"node_id": node, "prompt_id": pid,
+                       "display_node_id": node, "image_type": "image/png"}
+                      ).encode()
+    ws_send(struct.pack(">I", 4) + struct.pack(">I", len(meta)) + meta
+            + _png(40 + step * 30), binary=True)
+
+
+def ws_send(obj, binary=False):
+    """One unmasked frame to every connected /ws client — text, or binary."""
+    data = obj if binary else json.dumps(obj).encode()
+    head = bytearray([0x82 if binary else 0x81])
     if len(data) < 126:
         head.append(len(data))
     else:
@@ -113,14 +135,29 @@ def execute(pid, graph):
 
 def _execute(pid, graph):
     ws_send({"type": "execution_start", "data": {"prompt_id": pid}})
+    # every node announced as it starts, as ComfyUI does; samplers carry the
+    # progress steps, and "executing" None marks the end
+    samplers = [n for n, v in graph.items() if v["class_type"] == "KSampler"]
     steps = max(1, int(DELAY * 2))
-    for i in range(steps):
-        time.sleep(DELAY / steps)
-        ws_send({"type": "progress",
-                 "data": {"value": i + 1, "max": steps, "prompt_id": pid}})
-        with LOCK:
-            if pid in INTERRUPTS:
-                break
+    for nid in sorted(graph, key=lambda n: int(n) if str(n).isdigit() else 0):
+        ws_send({"type": "executing",
+                 "data": {"node": nid, "prompt_id": pid}})
+        if nid in samplers:
+            for i in range(steps):
+                time.sleep(DELAY / steps)
+                ws_send({"type": "progress",
+                         "data": {"value": i + 1, "max": steps,
+                                  "prompt_id": pid, "node": nid}})
+                # the KJ override on this sampler's model: a frame per step
+                src = graph[nid]["inputs"].get("model")
+                if isinstance(src, list) and graph.get(str(src[0]), {}).get(
+                        "class_type") == "ModelPreviewOverrideKJ":
+                    ws_preview(pid, nid, i)
+                with LOCK:
+                    if pid in INTERRUPTS:
+                        break
+    if not samplers:
+        time.sleep(DELAY)
     with LOCK:
         interrupted = pid in INTERRUPTS
     if os.environ.get("MOCK_FAIL_AFTER"):
@@ -147,6 +184,7 @@ def _execute(pid, graph):
     with LOCK:
         QUEUE_RUNNING.remove(pid)
         HISTORY[pid] = {"status": status, "outputs": outputs}
+    ws_send({"type": "executing", "data": {"node": None, "prompt_id": pid}})
     ws_send({"type": "execution_success" if status["status_str"] == "success"
              else "execution_error", "data": {"prompt_id": pid}})
 
@@ -164,6 +202,20 @@ def validate(graph):
             continue
         spec = dict(info["input"].get("required", {}))
         spec.update(info["input"].get("optional", {}))
+        required = [n for n in (info["input"].get("required") or {})]
+        # V3 dynamic combos: the chosen option's inputs arrive as
+        # "<combo>.<sub>" and its required ones must be there
+        for name, d in list(spec.items()):
+            if isinstance(d[0], str) and d[0].startswith("COMFY_DYNAMICCOMBO"):
+                for opt in (d[1] or {}).get("options", []):
+                    if opt["key"] != node["inputs"].get(name):
+                        continue
+                    ins = opt.get("inputs") or {}
+                    for sub, sd in (ins.get("required") or {}).items():
+                        spec[f"{name}.{sub}"] = sd
+                        required.append(f"{name}.{sub}")
+                    for sub, sd in (ins.get("optional") or {}).items():
+                        spec[f"{name}.{sub}"] = sd
         node_errs = []
         for name, value in node["inputs"].items():
             if name == "control_after_generate":
@@ -199,7 +251,7 @@ def validate(graph):
                 node_errs.append({"message": "Wrong type", "details": f"{name} STRING"})
             elif kind == "BOOLEAN" and not isinstance(value, bool):
                 node_errs.append({"message": "Wrong type", "details": f"{name} BOOLEAN"})
-        for name in (info["input"].get("required") or {}):
+        for name in required:
             if name != "control_after_generate" and name not in node["inputs"]:
                 node_errs.append({"message": "Required input is missing",
                                   "details": name})
@@ -246,11 +298,19 @@ class H(BaseHTTPRequestHandler):
         if p == "/object_info":
             self._send(200, _object_info())
         elif p == "/system_stats":
-            system = {"comfyui_version": "0.3.75"}
+            system = {"comfyui_version": "0.3.75",
+                      "ram_total": 34_000_000_000, "ram_free": 20_000_000_000}
             root = os.environ.get("MOCK_COMFY_ROOT", "")
             if root:
-                system["argv"] = [f"{root}/main.py"]
-            self._send(200, {"system": system})
+                system["argv"] = [f"{root}/main.py"] + os.environ.get(
+                    "MOCK_COMFY_FLAGS", "").split()
+            with LOCK:
+                busy = bool(QUEUE_RUNNING)
+            # an RTX 4060 as torch reports it; busier while rendering
+            self._send(200, {"system": system, "devices": [{
+                "name": "cuda:0 NVIDIA GeForce RTX 4060 : cudaMallocAsync",
+                "type": "cuda", "vram_total": 8_585_216_000,
+                "vram_free": 1_000_000_000 if busy else 7_500_000_000}]})
         elif p.startswith("/history/"):
             pid = p.rsplit("/", 1)[-1]
             with LOCK:
@@ -262,6 +322,11 @@ class H(BaseHTTPRequestHandler):
                 self._send(200, real, "video/webm")
             else:
                 self._send(200, FAKE_MP4, "video/mp4")
+        elif p == "/queue":
+            with LOCK:
+                self._send(200, {
+                    "queue_running": [[0, pid, {}, {}, []] for pid in QUEUE_RUNNING],
+                    "queue_pending": [[0, pid, {}, {}, []] for pid in QUEUE_PENDING]})
         elif p == "/prompts":            # test-only: what was queued
             with LOCK:
                 self._send(200, PROMPTS)
@@ -282,7 +347,7 @@ class H(BaseHTTPRequestHandler):
                     "node_errors": bad})
                 return
             with LOCK:
-                pid = f"pid{len(HISTORY) + len(QUEUE_PENDING) + len(QUEUE_RUNNING) + 1}"
+                pid = f"pid{len(PROMPTS) + 1}"
                 PROMPTS[pid] = graph
                 QUEUE_PENDING.append(pid)
             threading.Thread(target=execute, args=(pid, graph),
@@ -292,6 +357,17 @@ class H(BaseHTTPRequestHandler):
             with LOCK:
                 INTERRUPTS.extend(QUEUE_RUNNING)
             self._send(200, {})
+        elif p == "/queue":
+            body = json.loads(raw or b"{}")
+            with LOCK:
+                for pid in body.get("delete", []):
+                    if pid in QUEUE_PENDING:     # as ComfyUI: gone, no history
+                        QUEUE_PENDING.remove(pid)
+            self._send(200, {})
+        elif p == "/delay":              # test-only: render speed from now on
+            global DELAY
+            DELAY = float(json.loads(raw or b"{}").get("seconds", DELAY))
+            self._send(200, {"delay": DELAY})
         elif p == "/testvideo":
             with LOCK:
                 TEST_VIDEO[:] = [raw]

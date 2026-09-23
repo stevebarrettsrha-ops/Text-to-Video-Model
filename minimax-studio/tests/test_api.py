@@ -8,6 +8,7 @@ with the failure paths a person would eventually hit too.
 from __future__ import annotations
 
 import sys
+import time
 from pathlib import Path
 
 import requests
@@ -209,6 +210,8 @@ def run(slow: bool = False) -> Suite:
                 return [x for x in st["steps"] if x["key"] == key][0]
             wait_for(lambda: setup_state()["done"] or setup_state()["error"], 30)
             st = setup_state()
+            s.check("an unreachable preview decoder is skipped, not fatal",
+                    any("Skipped taeh3" in ln for ln in st.get("lines", [])))
             s.check("external setup walks every step to done",
                     st["done"] and not st["error"],
                     st.get("error") or "")
@@ -270,7 +273,9 @@ def run(slow: bool = False) -> Suite:
             s.check("the detail line names the file and the byte counts",
                     "of" in seen_detail and "(" in seen_detail, seen_detail[:80])
             got = {p.name for p in models.rglob("*.safetensors")}
-            s.check("all five weights landed on disk", len(got) == 5,
+            s.check("all five weights landed on disk, plus the preview's taeh3",
+                    len(got) == 6 and "taeh3.safetensors" in got
+                    and (models / "vae_approx" / "taeh3.safetensors").exists(),
                     str(sorted(got)))
             st_now = requests.get(app.url + "/api/status", timeout=10).json()
             s.check("the app is ready once they land",
@@ -468,6 +473,49 @@ def run(slow: bool = False) -> Suite:
             jobs = finish_jobs(app.url, timeout=30)
             s.equal("a cancelled job says cancelled",
                     jobs[0]["status"], "cancelled")
+
+    # -- the live preview, frame by frame ------------------------------------
+    with comfy(delay=4.0) as mock, Workspace() as ws:
+        models = ws / "models"
+        fake_weights(models)
+        with studio(mock.url, ws / "data", models) as app:
+            r = requests.post(app.url + "/api/generate",
+                              json={"prompt": "watch it"}, timeout=30)
+            job_id = r.json()["jobs"][0]
+            seen = []
+
+            def frame_arrived():
+                j = [x for x in requests.get(app.url + "/api/jobs",
+                                             timeout=10).json()
+                     if x["id"] == job_id][0]
+                if j.get("preview"):
+                    seen.append(j["preview"])
+                return len(set(seen)) >= 2
+            s.check("a running job carries a preview counter that advances",
+                    wait_for(frame_arrived, 20, 0.2), str(seen))
+            img = requests.get(f"{app.url}/api/jobs/{job_id}/preview?n=1",
+                               timeout=10)
+            s.check("the preview endpoint serves the frame as an image",
+                    img.ok and img.headers["Content-Type"] == "image/png"
+                    and img.content[:4] == b"\x89PNG")
+            s.equal("an unknown job has no preview",
+                    requests.get(app.url + "/api/jobs/nope/preview",
+                                 timeout=10).status_code, 404)
+            jobs = finish_jobs(app.url, timeout=30)
+            s.check("the render still finishes with the preview on",
+                    jobs[0]["status"] == "done")
+            s.check("a finished job drops its preview",
+                    not jobs[0].get("preview"))
+            r = requests.post(app.url + "/api/generate",
+                              json={"prompt": "no peeking", "preview": False},
+                              timeout=30)
+            quiet = r.json()["jobs"][0]
+            time.sleep(3)
+            j = [x for x in requests.get(app.url + "/api/jobs",
+                                         timeout=10).json() if x["id"] == quiet][0]
+            s.check("with the preview switched off, no frames come",
+                    not j.get("preview"))
+            finish_jobs(app.url, timeout=30)
 
     # -- cancelling a queued run leaves the running one alone ----------------
     with comfy(delay=4.0) as mock, Workspace() as ws:

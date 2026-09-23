@@ -68,9 +68,18 @@ def run(slow: bool = False) -> Suite:
         s.check("CreateVideo muxes the audio branch in",
                 create.get("audio") == [dec_a[0][0], 0])
         sampler = nodes_of(g, "KSampler")[0][1]["inputs"]
+        preview = nodes_of(g, "ModelPreviewOverrideKJ")
+        s.check("the live preview sits on the base sampler, decoding with taeh3",
+                bool(preview) and sampler["model"] == [preview[0][0], 0]
+                and preview[0][1]["inputs"]["tiny_vae"] == "taeh3.safetensors"
+                and preview[0][1]["inputs"]["suppress_default_preview"] is False)
         s.check("the model chain runs through LoRA and sigma shift",
-                sampler["model"][0]
+                preview[0][1]["inputs"]["model"][0]
                 == nodes_of(g, "MiniMaxH3SigmaShift")[0][0])
+        off = client.build({"prompt": "x", "preview": False})
+        s.check("preview off: no override node, the sampler takes the model",
+                not nodes_of(off["prompt"], "ModelPreviewOverrideKJ")
+                and not off["preview"])
 
         # -- reference images -------------------------------------------------
         class FakeUpload:
@@ -171,6 +180,11 @@ def run(slow: bool = False) -> Suite:
                 cat[1]["inputs"]["audio_latent"] == [sep[0][0], 1])
         second = [n for _, n in nodes_of(g, "KSampler")
                   if n["inputs"]["denoise"] < 1.0]
+        s.check("the refine pass keeps the plain model, as in the workflow",
+                all(g[str(n["inputs"]["model"][0])]["class_type"]
+                    != "ModelPreviewOverrideKJ"
+                    for _, n in nodes_of(g, "KSampler")
+                    if n["inputs"]["denoise"] < 1.0))
         s.check("the second sampler runs at denoise 0.5",
                 len(second) == 1 and second[0]["inputs"]["denoise"] == 0.5)
         s.equal("both samplers share the seed",
@@ -213,6 +227,9 @@ def run(slow: bool = False) -> Suite:
                 "not installed" in built["note"] and not built["upscaled"])
         client.queue(built["prompt"])
         s.check("the degraded graph is still a valid prompt", True)
+        s.check("without KJNodes the preview is simply skipped",
+                not nodes_of(built["prompt"], "ModelPreviewOverrideKJ")
+                and not built["preview"])
         s.check("sigma shift and attention are simply skipped",
                 not nodes_of(built["prompt"], "MiniMaxH3SigmaShift"))
         s.fails_with("RTX upscale without the node says how to fix it",

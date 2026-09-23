@@ -157,6 +157,7 @@ def fake_install(root: Path, stale_first_boot: bool = False) -> Path:
         p.add_argument("--disable-auto-launch", action="store_true")
         p.add_argument("--lowvram", action="store_true")
         p.add_argument("--cache-none", action="store_true")
+        p.add_argument("--preview-method")
         a = p.parse_args()
         flag = here / "stale.flag"
         if flag.exists():

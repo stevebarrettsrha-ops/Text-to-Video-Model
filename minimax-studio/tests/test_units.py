@@ -229,6 +229,15 @@ def run(slow: bool = False) -> Suite:
              bootstrap.engine_lowvram({"argv": ["main.py"]}),
              bootstrap.engine_lowvram({})], [True, False, None])
 
+    # -- the preview decoder is optional, and only with KJNodes --------------
+    extras = bootstrap.extra_models(dict(bootstrap.DEFAULT_CONFIG))
+    s.check("taeh3 is offered for the live preview, into vae_approx",
+            [(m["name"], m["folder"], m["role"]) for m in extras]
+            == [("taeh3.safetensors", "vae_approx", "optional")])
+    s.equal("and not without KJNodes",
+            bootstrap.extra_models(dict(bootstrap.DEFAULT_CONFIG,
+                                        want_kjnodes=False)), [])
+
     # -- the ComfyUI address, however it was typed ---------------------------
     s.equal("a trailing slash does not break the port",
             bootstrap.comfy_port("http://127.0.0.1:8188/"), 8188)

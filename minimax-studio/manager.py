@@ -465,7 +465,8 @@ def download_set(cfg: dict) -> list[Task]:
     if not root:
         raise RuntimeError("Set the ComfyUI models folder first.")
     tasks = []
-    for item in bootstrap.missing_models(root, cfg):
+    for item in (bootstrap.missing_models(root, cfg)
+                 + bootstrap.missing_extras(root, cfg)):
         # each file names its own repo and path: the 4-step turbo LoRA sits at
         # the root of a different repo, and hf_repo is whatever was browsed last
         tasks.append(hf_download(cfg, item["repo"], item["path"],

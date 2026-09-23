@@ -168,6 +168,21 @@ def missing_models(models_dir: Path, cfg: dict) -> list[dict]:
     return [m for m in model_set(cfg) if not model_path(models_dir, m).exists()]
 
 
+def extra_models(cfg: dict) -> list[dict]:
+    """Optional files: taeh3, the tiny VAE the live preview decodes with.
+    Only wanted with KJNodes, whose preview node is what uses it."""
+    if not cfg.get("want_kjnodes", True):
+        return []
+    return [{**PREVIEW_TAE, "size": PREVIEW_TAE.get("size", 0),
+             "role": "optional",
+             "why": "Live preview while a clip renders (KJNodes)."}]
+
+
+def missing_extras(models_dir: Path, cfg: dict) -> list[dict]:
+    return [m for m in extra_models(cfg)
+            if not model_path(models_dir, m).exists()]
+
+
 def node_installed(comfy_dir: Path, node: dict) -> bool:
     return (comfy_dir / "custom_nodes" / node["dir"]).is_dir()
 
@@ -741,6 +756,9 @@ class ComfyProcess:
             # nothing is cached between runs. Slower, but it is what makes a
             # 21 GB DiT possible on a small card at all.
             cmd += ["--lowvram", "--cache-none"]
+        # ComfyUI sends no step previews unless asked; the live preview in
+        # the app (KJ's taeh3 override, latent2rgb without it) needs them
+        cmd += ["--preview-method", "auto"]
         prog.log("Launching ComfyUI: " + " ".join(cmd))
         flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) \
             if platform.system() == "Windows" else 0
@@ -1250,7 +1268,7 @@ def run_setup(cfg: dict, prog: Progress, comfy: ComfyProcess,
             prog.finish("deps", f"Installed into {Path(cfg['python']).name}")
 
         prog.begin("models")
-        todo = missing_models(models_dir, cfg)
+        todo = missing_models(models_dir, cfg) + missing_extras(models_dir, cfg)
         if not todo:
             prog.finish("models", "Everything is already downloaded")
         else:
@@ -1289,7 +1307,17 @@ def run_setup(cfg: dict, prog: Progress, comfy: ComfyProcess,
                 prog.track("models",
                            (done_bytes / grand * 100) if grand else None,
                            f"{head} — starting…")
-                download_file(cfg, item["repo"], item["path"], dest, on_prog)
+                try:
+                    download_file(cfg, item["repo"], item["path"], dest,
+                                  on_prog)
+                except Exception as exc:  # noqa: BLE001
+                    if item.get("role") != "optional":
+                        raise
+                    # the preview decoder is a nicety: never fail setup on it
+                    prog.log(f"Skipped {item['name']} ({exc}) — clips still "
+                             "render, without the live preview.")
+                    done_bytes += size
+                    continue
                 done_bytes += size or (dest.stat().st_size
                                        if dest.exists() else 0)
                 prog.log(f"Downloaded {item['name']}")

@@ -31,11 +31,24 @@
 ## Nodes the workflow uses that this app does not
 
 `minimaxh3_r2v_with_upscale.json` also carries Pixaroma timer/monitor/free-VRAM
-nodes, `ResolutionSelector`, `ComfyMathExpression`, `PrimitiveFloat/String` and
-`ModelPreviewOverrideKJ`. All are canvas conveniences whose jobs the front end
-does itself (length and size maths, prompt entry, VRAM hygiene between runs), so
-their packs are deliberately not required. KJNodes and the RTX nodes are offered
-because they add something the front end cannot do.
+nodes, `ResolutionSelector`, `ComfyMathExpression` and `PrimitiveFloat/String`.
+All are canvas conveniences whose jobs the front end does itself (length and
+size maths, prompt entry, VRAM hygiene between runs), so their packs are
+deliberately not required. KJNodes and the RTX nodes are offered because they
+add something the front end cannot do.
+
+## Live preview
+
+`ModelPreviewOverrideKJ` is wired as in the workflow: on the **base** sampler's
+model only (the refine pass keeps the plain model), decoding with `taeh3` from
+`vae_approx`, `suppress_default_preview` off. The managed engine launches with
+`--preview-method auto`, or ComfyUI sends no step previews at all. Frames
+arrive as binary websocket messages (event 1 PREVIEW_IMAGE, event 4
+PREVIEW_IMAGE_WITH_METADATA naming the prompt); `take_preview` keeps only the
+newest per prompt and `/api/jobs/<id>/preview?n=` serves it, `n` changing only
+with a new frame so re-renders hit the cache. Everything degrades: no KJNodes
+or no taeh3 → no node, the clip renders the same. taeh3 is an **optional**
+download — a failure to fetch it is logged and skipped, never fatal to setup.
 
 ## Graceful degradation
 

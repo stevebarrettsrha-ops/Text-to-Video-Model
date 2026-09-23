@@ -53,7 +53,10 @@ downloads the weights with resume and live progress.
 
 Custom nodes, all optional:
 
-- **ComfyUI-KJNodes** — live preview while a clip renders
+- **ComfyUI-KJNodes** — live preview while a clip renders: the job card shows
+  each sampling step as the tiny `taeh3` decoder sees it (Settings → Live
+  preview turns it off; `taeh3` is fetched with the weights, and skipped
+  without complaint if it cannot be)
 - **NVIDIA RTX nodes** — `RTXVideoSuperResolution` for the upscale action
 - **ComfyUI-Manager**
 

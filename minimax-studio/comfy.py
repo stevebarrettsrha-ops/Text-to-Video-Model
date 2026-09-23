@@ -41,6 +41,7 @@ SIGMA_SHIFT = "MiniMaxH3SigmaShift"
 ATTENTION = "ModelAttentionBackend"
 UPSCALER = "MinimaxH3LatentUpscaler3D"
 RTX_UPSCALE = "RTXVideoSuperResolution"
+PREVIEW = "ModelPreviewOverrideKJ"
 
 
 class ComfyError(RuntimeError):
@@ -182,7 +183,15 @@ class ComfyClient:
         return {"r2v": self.has(R2V), "sigma_shift": self.has(SIGMA_SHIFT),
                 "attention": self.has(ATTENTION), "upscaler": self.has(UPSCALER),
                 "rtx": self.has(RTX_UPSCALE), "lora": self.has("LoraLoaderModelOnly"),
-                "preview": self.has("ModelPreviewOverrideKJ")}
+                "preview": self.has(PREVIEW) and bool(self.preview_vaes())}
+
+    def preview_vaes(self) -> list[str]:
+        """The tiny VAEs the KJ preview node can decode with (taeh3 for H3)."""
+        for name in ("tiny_vae", "vae_name"):
+            vals = self._enum(PREVIEW, name)
+            if vals:
+                return vals
+        return []
 
     # ------------------------------------------------------------------ #
     # picking files
@@ -395,6 +404,23 @@ class ComfyClient:
                             "value": float(p.get("shift_2", 3))}})
             model_ref = ["7", 0]
 
+        # live preview, as the workflow wires it: KJ's override on the base
+        # sampler's model, decoding each step with taeh3. The refine pass
+        # keeps the plain model, as in the workflow.
+        sample_ref = model_ref
+        tae = self._pick(self.preview_vaes(), "", ["taeh3"]) \
+            if p.get("preview", True) and self.has(PREVIEW) else ""
+        if tae:
+            g["8"] = self._node(PREVIEW, {
+                "model": {"names": ["model"], "value": model_ref,
+                          "required": True},
+                "tiny_vae": {"names": ["tiny_vae", "vae_name"], "value": tae,
+                             "required": True},
+                "suppress": {"names": ["suppress_default_preview"],
+                             "value": False},
+                "fps": {"names": ["preview_fps"], "value": fps}})
+            sample_ref = ["8", 0]
+
         # Reference images preserve subjects and appearance. A reference video
         # contributes its decoded frame sequence through ref_video_0, giving H3
         # motion/composition to follow instead of reducing it to one still.
@@ -452,7 +478,7 @@ class ComfyClient:
                              "required": True}})
 
         g["22"] = self._node("KSampler", {
-            "model": {"names": ["model"], "value": model_ref, "required": True},
+            "model": {"names": ["model"], "value": sample_ref, "required": True},
             "positive": {"names": ["positive"], "value": ["20", 0],
                          "required": True},
             "negative": {"names": ["negative"], "value": ["21", 0],
@@ -500,7 +526,8 @@ class ComfyClient:
         return {"prompt": g, "seed": seed, "files": files, "length": length,
                 "width": width, "height": height, "fps": fps,
                 "seconds": round(length / fps, 2), "note": note,
-                "upscaled": bool(note == "")and bool(p.get("upscale"))}
+                "upscaled": bool(note == "")and bool(p.get("upscale")),
+                "preview": bool(tae)}
 
     def _add_upscale(self, g: dict, latent_ref: list, model_ref: list,
                      p: dict, seed: int):

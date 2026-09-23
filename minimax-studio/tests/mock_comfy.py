@@ -84,10 +84,32 @@ def _object_info():
     return out
 
 
-def ws_send(obj):
-    """One unmasked text frame to every connected /ws client."""
-    data = json.dumps(obj).encode()
-    head = bytearray([0x81])
+def _png(shade: int) -> bytes:
+    """A real 8x8 grey PNG — enough for a browser to decode and show."""
+    import zlib
+
+    def chunk(kind, body):
+        return (struct.pack(">I", len(body)) + kind + body
+                + struct.pack(">I", zlib.crc32(kind + body) & 0xffffffff))
+    rows = b"".join(b"\x00" + bytes([shade % 256]) * 8 for _ in range(8))
+    return (b"\x89PNG\r\n\x1a\n"
+            + chunk(b"IHDR", struct.pack(">IIBBBBB", 8, 8, 8, 0, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b""))
+
+
+def ws_preview(pid, node, step):
+    """A PREVIEW_IMAGE_WITH_METADATA frame, laid out as ComfyUI sends it."""
+    meta = json.dumps({"node_id": node, "prompt_id": pid,
+                       "display_node_id": node, "image_type": "image/png"}
+                      ).encode()
+    ws_send(struct.pack(">I", 4) + struct.pack(">I", len(meta)) + meta
+            + _png(40 + step * 30), binary=True)
+
+
+def ws_send(obj, binary=False):
+    """One unmasked frame to every connected /ws client — text, or binary."""
+    data = obj if binary else json.dumps(obj).encode()
+    head = bytearray([0x82 if binary else 0x81])
     if len(data) < 126:
         head.append(len(data))
     else:
@@ -126,6 +148,11 @@ def _execute(pid, graph):
                 ws_send({"type": "progress",
                          "data": {"value": i + 1, "max": steps,
                                   "prompt_id": pid, "node": nid}})
+                # the KJ override on this sampler's model: a frame per step
+                src = graph[nid]["inputs"].get("model")
+                if isinstance(src, list) and graph.get(str(src[0]), {}).get(
+                        "class_type") == "ModelPreviewOverrideKJ":
+                    ws_preview(pid, nid, i)
                 with LOCK:
                     if pid in INTERRUPTS:
                         break
@@ -337,6 +364,10 @@ class H(BaseHTTPRequestHandler):
                     if pid in QUEUE_PENDING:     # as ComfyUI: gone, no history
                         QUEUE_PENDING.remove(pid)
             self._send(200, {})
+        elif p == "/delay":              # test-only: render speed from now on
+            global DELAY
+            DELAY = float(json.loads(raw or b"{}").get("seconds", DELAY))
+            self._send(200, {"delay": DELAY})
         elif p == "/testvideo":
             with LOCK:
                 TEST_VIDEO[:] = [raw]

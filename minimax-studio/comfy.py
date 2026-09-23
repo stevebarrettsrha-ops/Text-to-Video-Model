@@ -640,28 +640,29 @@ class ComfyClient:
         except Exception:
             pass
 
-    def cancel(self, prompt_id: str) -> None:
-        """Stop this prompt and only this one.
+    def cancel(self, prompt_id: str) -> bool:
+        """Stop this prompt and only this one; True once that is done.
 
         A bare /interrupt stops whatever is running, which may be another
-        job; a prompt still waiting is taken off the queue instead.
+        job; a prompt still waiting is taken off the queue instead. False
+        when ComfyUI could not be asked, so the caller tries again.
         """
         try:
             r = requests.get(f"{self.url}/queue", timeout=10)
             r.raise_for_status()
             q = r.json()
-        except Exception:
-            return
-        running = {e[1] for e in q.get("queue_running") or []
-                   if isinstance(e, list) and len(e) > 1}
-        if prompt_id in running:
-            self.interrupt()
-        else:
-            try:
+            running = {e[1] for e in q.get("queue_running") or []
+                       if isinstance(e, list) and len(e) > 1}
+            if prompt_id in running:
+                requests.post(f"{self.url}/interrupt", timeout=10) \
+                    .raise_for_status()
+            else:
                 requests.post(f"{self.url}/queue",
-                              json={"delete": [prompt_id]}, timeout=10)
-            except Exception:
-                pass
+                              json={"delete": [prompt_id]}, timeout=10) \
+                    .raise_for_status()
+            return True
+        except Exception:
+            return False
 
     def history(self, prompt_id: str) -> dict:
         r = requests.get(f"{self.url}/history/{prompt_id}", timeout=20)

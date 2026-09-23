@@ -165,6 +165,12 @@ def ws_listener() -> None:
                 "https://", "wss://")
             ws = websocket.WebSocket()
             ws.connect(f"{url}/ws?clientId={client.client_id}", timeout=10)
+            # the connect timeout would otherwise stay on every recv, and
+            # ComfyUI sends nothing for minutes while a 21 GB DiT loads
+            ws.settimeout(None)
+            # ask for previews that name their prompt (event 4)
+            ws.send(json.dumps({"type": "feature_flags",
+                                "data": {"supports_preview_metadata": True}}))
             current = None
             while True:
                 raw = ws.recv()
@@ -175,15 +181,18 @@ def ws_listener() -> None:
                     continue
                 msg = json.loads(raw)
                 mtype, data = msg.get("type"), msg.get("data") or {}
-                pid = data.get("prompt_id") or current
-                if mtype == "execution_start":
-                    current = data.get("prompt_id")
-                elif mtype == "progress" and pid:
+                # any message naming a prompt says which one is running now;
+                # a plain preview frame (event 1) is credited to it
+                if data.get("prompt_id"):
+                    current = data["prompt_id"]
+                pid = current
+                if mtype == "progress" and pid:
                     ws_progress.setdefault(pid, {}).update(
                         value=data.get("value", 0), max=data.get("max", 0))
                 elif mtype in ("execution_success", "execution_error") and pid:
                     ws_progress.pop(pid, None)
-                    ws_preview.pop(pid, None)
+                    # the last frame stays (take_preview caps how many): a
+                    # card rendered just before the finish still asks for it
         except Exception:
             time.sleep(4)
 
@@ -213,8 +222,9 @@ def run_job(job_id: str, params: dict) -> None:
             time.sleep(1.0)
             with jobs_lock:
                 cancelled = jobs[job_id].get("cancelled")
-            if cancelled:
-                client.cancel(prompt_id)
+            # only "cancelled" once ComfyUI has actually let go of it;
+            # otherwise try again next second
+            if cancelled and client.cancel(prompt_id):
                 set_state(status="cancelled", stage="Cancelled")
                 return
             err = client.failed(prompt_id)
@@ -386,17 +396,21 @@ def api_setup_start():
             return jsonify({"error": "Setup is already running."}), 409
         progress.__init__()
         progress.running = True       # claimed here, so a double click is a 409
-    b = request.get_json(silent=True) or {}
-    for key in ("comfy_url", "models_dir", "precision", "turbo",
-                "lowvram", "want_kjnodes", "want_rtx", "want_manager"):
-        if key in b:
-            cfg[key] = b[key]
-    cfg["comfy_url"] = normal_url(cfg["comfy_url"])
-    client.url = cfg["comfy_url"]
-    save_config(cfg)
-    threading.Thread(target=bootstrap.run_setup,
-                     args=(cfg, progress, comfy_proc, b.get("comfy_dir", ""),
-                           b.get("mode", "auto")), daemon=True).start()
+    try:
+        b = request.get_json(silent=True) or {}
+        for key in ("comfy_url", "models_dir", "precision", "turbo",
+                    "lowvram", "want_kjnodes", "want_rtx", "want_manager"):
+            if key in b:
+                cfg[key] = b[key]
+        cfg["comfy_url"] = normal_url(cfg["comfy_url"])
+        client.url = cfg["comfy_url"]
+        save_config(cfg)
+        threading.Thread(target=bootstrap.run_setup,
+                         args=(cfg, progress, comfy_proc, b.get("comfy_dir", ""),
+                               b.get("mode", "auto")), daemon=True).start()
+    except Exception:
+        progress.running = False      # a failed start must not lock setup
+        raise
     return jsonify({"ok": True})
 
 

@@ -74,6 +74,19 @@ settings popover) and `frameRef()` (the continue-clip capture); do not grow a
 second copy of either. `updateBoardJobs` refreshes only the `.bstatus` zones
 so a full re-render never eats a keystroke in a card's textarea.
 
+## Dynamic combos and the nodes' real input names
+
+The input names in `tests/object_info.json` must be the ones the reference
+workflows save in `widgets_values_named`, never a guess: `MiniMaxH3SigmaShift`
+takes `shift_video`/`shift_audio`, `ModelAttentionBackend` takes `attention`.
+Two inputs are V3 dynamic combos whose settings hang off the chosen option and
+travel in the prompt as `<combo>.<sub>`: the RTX node's
+`resize_type` → `resize_type.scale`, and the H3 latent upscaler's
+`mode` → `mode.megapixels`. `_node()` expands those from the schema (fills
+the chosen option's sub-inputs, drops the others). A stand-in built from
+guessed names once let the whole H3 upscale pass ship with a sub-input a real
+engine rejects.
+
 ## Two bugs worth not reintroducing
 
 - `run_job` must use `built.get("seed")`: the RTX graph has no seed.

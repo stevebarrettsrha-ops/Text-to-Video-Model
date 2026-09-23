@@ -155,6 +155,27 @@ This is the part of the app that will run properly on your hardware today.
 
 ---
 
+## Timing it on your card
+
+`bench.py` renders a small matrix through the same graph builder the app
+uses and reports what each setting really costs on this machine:
+
+```bash
+python bench.py                                  # 0.2 / 0.3 / 0.4 MP, H3 upscale off and on
+python bench.py --bases 0.2,0.3 --upscale on --rtx --runs 2
+python bench.py --ref face.png --prompt "..."    # with a reference image
+```
+
+Run it from this folder with the Python the app runs on (on macOS / Linux
+that is `.venv/bin/python bench.py`, which `run.sh` created). Start ComfyUI
+from the Engine page first, so it runs with `--lowvram` as the app does. The script warns if the engine it finds was started without it.
+Each render shares one seed, so clips differ only by size and upscale. For
+every render it records the time per stage from ComfyUI's own events (text
+encode, base sampling, H3 latent upscale, refine, decode, audio), seconds per
+step, peak VRAM in use and the lowest free RAM. The report (`report.md` and
+`report.csv`) and every clip, plus its RTX ×2 with `--rtx`, go to
+`data/bench/<date-time>/`, so before and after can be compared side by side.
+
 ## Layout
 
 ```

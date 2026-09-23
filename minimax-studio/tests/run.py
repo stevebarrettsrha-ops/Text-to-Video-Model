@@ -39,7 +39,7 @@ def gate() -> tuple[int, list[str]]:
     a word, so this is not optional.
     """
     passed, failures = 0, []
-    sources = ["server.py", "comfy.py", "bootstrap.py", "manager.py"]
+    sources = ["server.py", "comfy.py", "bootstrap.py", "manager.py", "bench.py"]
     done = subprocess.run([sys.executable, "-m", "py_compile", *sources],
                           cwd=ROOT, capture_output=True, text=True)
     if done.returncode == 0:

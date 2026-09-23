@@ -104,7 +104,7 @@
     "model": [
      "MODEL"
     ],
-    "backend": [
+    "attention": [
      [
       "comfy kitchen attention",
       "pytorch attention",
@@ -124,16 +124,20 @@
     "model": [
      "MODEL"
     ],
-    "shift": [
+    "shift_video": [
      "FLOAT",
      {
-      "default": 6.0
+      "default": 6.0,
+      "min": 0.0,
+      "max": 100.0
      }
     ],
-    "shift_2": [
+    "shift_audio": [
      "FLOAT",
      {
-      "default": 3.0
+      "default": 3.0,
+      "min": 0.0,
+      "max": 100.0
      }
     ]
    }
@@ -496,25 +500,56 @@
      "IMAGE"
     ],
     "resize_type": [
-     [
-      "scale by multiplier",
-      "scale to resolution"
-     ],
-     {}
-    ],
-    "scale": [
-     "INT",
+     "COMFY_DYNAMICCOMBO_V3",
      {
-      "default": 2,
-      "min": 1,
-      "max": 4
+      "options": [
+       {
+        "key": "scale by multiplier",
+        "inputs": {
+         "required": {
+          "scale": [
+           "INT",
+           {
+            "default": 2,
+            "min": 1,
+            "max": 4
+           }
+          ]
+         }
+        }
+       },
+       {
+        "key": "scale to resolution",
+        "inputs": {
+         "required": {
+          "width": [
+           "INT",
+           {
+            "default": 1920,
+            "min": 64,
+            "max": 8192
+           }
+          ],
+          "height": [
+           "INT",
+           {
+            "default": 1080,
+            "min": 64,
+            "max": 8192
+           }
+          ]
+         }
+        }
+       }
+      ]
      }
     ],
     "quality": [
      [
       "ULTRA",
       "HIGH",
-      "MEDIUM"
+      "MEDIUM",
+      "LOW"
      ],
      {}
     ]
@@ -534,24 +569,46 @@
      {}
     ],
     "latent": [
-     "LATENT"
+     "*"
     ],
-    "resize_type": [
-     [
-      "megapixels",
-      "scale"
-     ],
-     {}
-    ],
-    "megapixels": [
-     "FLOAT",
+    "mode": [
+     "COMFY_DYNAMICCOMBO_V3",
      {
-      "default": 0.6,
-      "min": 0.1,
-      "max": 4.0
+      "options": [
+       {
+        "key": "megapixels",
+        "inputs": {
+         "required": {
+          "megapixels": [
+           "FLOAT",
+           {
+            "default": 0.6,
+            "min": 0.1,
+            "max": 4.0
+           }
+          ]
+         }
+        }
+       },
+       {
+        "key": "scale",
+        "inputs": {
+         "required": {
+          "scale": [
+           "FLOAT",
+           {
+            "default": 2.0,
+            "min": 1.0,
+            "max": 4.0
+           }
+          ]
+         }
+        }
+       }
+      ]
      }
     ],
-    "multiple_of": [
+    "align": [
      "INT",
      {
       "default": 32,
@@ -559,16 +616,31 @@
       "max": 256
      }
     ],
-    "use_tiling": [
+    "enable_temporal_chunking": [
      "BOOLEAN",
      {
       "default": true
      }
     ],
+    "force_unload": [
+     [
+      "cuda",
+      "none"
+     ],
+     {}
+    ],
     "device": [
      [
       "cuda",
       "cpu"
+     ],
+     {}
+    ],
+    "precision": [
+     [
+      "fp16",
+      "bf16",
+      "fp32"
      ],
      {}
     ]
@@ -618,17 +690,40 @@
       "default": 1024
      }
     ],
-    "throttle_ms": [
+    "jpeg_quality": [
      "INT",
      {
       "default": 80
      }
     ],
-    "vae_name": [
+    "suppress_default_preview": [
+     "BOOLEAN",
+     {
+      "default": false
+     }
+    ],
+    "preview_frames": [
+     "INT",
+     {
+      "default": 240
+     }
+    ],
+    "preview_fps": [
+     "INT",
+     {
+      "default": 24
+     }
+    ],
+    "tiny_vae": [
      [
       "taeh3.safetensors"
      ],
      {}
+    ]
+   },
+   "optional": {
+    "vae": [
+     "VAE"
     ]
    }
   },

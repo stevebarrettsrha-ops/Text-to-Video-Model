@@ -113,14 +113,24 @@ def execute(pid, graph):
 
 def _execute(pid, graph):
     ws_send({"type": "execution_start", "data": {"prompt_id": pid}})
+    # every node announced as it starts, as ComfyUI does; samplers carry the
+    # progress steps, and "executing" None marks the end
+    samplers = [n for n, v in graph.items() if v["class_type"] == "KSampler"]
     steps = max(1, int(DELAY * 2))
-    for i in range(steps):
-        time.sleep(DELAY / steps)
-        ws_send({"type": "progress",
-                 "data": {"value": i + 1, "max": steps, "prompt_id": pid}})
-        with LOCK:
-            if pid in INTERRUPTS:
-                break
+    for nid in sorted(graph, key=lambda n: int(n) if str(n).isdigit() else 0):
+        ws_send({"type": "executing",
+                 "data": {"node": nid, "prompt_id": pid}})
+        if nid in samplers:
+            for i in range(steps):
+                time.sleep(DELAY / steps)
+                ws_send({"type": "progress",
+                         "data": {"value": i + 1, "max": steps,
+                                  "prompt_id": pid, "node": nid}})
+                with LOCK:
+                    if pid in INTERRUPTS:
+                        break
+    if not samplers:
+        time.sleep(DELAY)
     with LOCK:
         interrupted = pid in INTERRUPTS
     if os.environ.get("MOCK_FAIL_AFTER"):
@@ -147,6 +157,7 @@ def _execute(pid, graph):
     with LOCK:
         QUEUE_RUNNING.remove(pid)
         HISTORY[pid] = {"status": status, "outputs": outputs}
+    ws_send({"type": "executing", "data": {"node": None, "prompt_id": pid}})
     ws_send({"type": "execution_success" if status["status_str"] == "success"
              else "execution_error", "data": {"prompt_id": pid}})
 
@@ -164,6 +175,20 @@ def validate(graph):
             continue
         spec = dict(info["input"].get("required", {}))
         spec.update(info["input"].get("optional", {}))
+        required = [n for n in (info["input"].get("required") or {})]
+        # V3 dynamic combos: the chosen option's inputs arrive as
+        # "<combo>.<sub>" and its required ones must be there
+        for name, d in list(spec.items()):
+            if isinstance(d[0], str) and d[0].startswith("COMFY_DYNAMICCOMBO"):
+                for opt in (d[1] or {}).get("options", []):
+                    if opt["key"] != node["inputs"].get(name):
+                        continue
+                    ins = opt.get("inputs") or {}
+                    for sub, sd in (ins.get("required") or {}).items():
+                        spec[f"{name}.{sub}"] = sd
+                        required.append(f"{name}.{sub}")
+                    for sub, sd in (ins.get("optional") or {}).items():
+                        spec[f"{name}.{sub}"] = sd
         node_errs = []
         for name, value in node["inputs"].items():
             if name == "control_after_generate":
@@ -199,7 +224,7 @@ def validate(graph):
                 node_errs.append({"message": "Wrong type", "details": f"{name} STRING"})
             elif kind == "BOOLEAN" and not isinstance(value, bool):
                 node_errs.append({"message": "Wrong type", "details": f"{name} BOOLEAN"})
-        for name in (info["input"].get("required") or {}):
+        for name in required:
             if name != "control_after_generate" and name not in node["inputs"]:
                 node_errs.append({"message": "Required input is missing",
                                   "details": name})
@@ -246,12 +271,19 @@ class H(BaseHTTPRequestHandler):
         if p == "/object_info":
             self._send(200, _object_info())
         elif p == "/system_stats":
-            system = {"comfyui_version": "0.3.75"}
+            system = {"comfyui_version": "0.3.75",
+                      "ram_total": 34_000_000_000, "ram_free": 20_000_000_000}
             root = os.environ.get("MOCK_COMFY_ROOT", "")
             if root:
                 system["argv"] = [f"{root}/main.py"] + os.environ.get(
                     "MOCK_COMFY_FLAGS", "").split()
-            self._send(200, {"system": system})
+            with LOCK:
+                busy = bool(QUEUE_RUNNING)
+            # an RTX 4060 as torch reports it; busier while rendering
+            self._send(200, {"system": system, "devices": [{
+                "name": "cuda:0 NVIDIA GeForce RTX 4060 : cudaMallocAsync",
+                "type": "cuda", "vram_total": 8_585_216_000,
+                "vram_free": 1_000_000_000 if busy else 7_500_000_000}]})
         elif p.startswith("/history/"):
             pid = p.rsplit("/", 1)[-1]
             with LOCK:

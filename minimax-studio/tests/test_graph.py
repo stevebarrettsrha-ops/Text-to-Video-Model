@@ -15,7 +15,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from comfy import ComfyClient, ComfyError          # noqa: E402
-from harness import Suite, comfy                   # noqa: E402
+from harness import Suite, Workspace, comfy        # noqa: E402
 
 
 def nodes_of(graph: dict, cls: str) -> list[tuple[str, dict]]:
@@ -137,6 +137,25 @@ def run(slow: bool = False) -> Suite:
         client.queue(built["prompt"])
         s.check("ComfyUI accepts the tiled clip", True)
 
+        # -- sigma shift, by the node's own input names -----------------------
+        built = client.build({"prompt": "x", "shift": 5.5, "shift_2": 2.5})
+        shift = nodes_of(built["prompt"], "MiniMaxH3SigmaShift")[0][1]["inputs"]
+        s.check("the shift settings reach shift_video and shift_audio",
+                shift.get("shift_video") == 5.5 and shift.get("shift_audio") == 2.5)
+
+        # -- the upscaler's own size and low-VRAM settings --------------------
+        built = client.build({"prompt": "x", "upscale": True, "seed": 3,
+                              "upscale_mp": 0.5})
+        up = nodes_of(built["prompt"], "MinimaxH3LatentUpscaler3D")[0][1]["inputs"]
+        s.check("the upscale target lands on the dynamic combo's mode.megapixels",
+                up.get("mode") == "megapixels" and up.get("mode.megapixels") == 0.5)
+        s.check("temporal chunking, fp16 and force-unload as in the workflow",
+                up.get("enable_temporal_chunking") is True
+                and up.get("precision") == "fp16"
+                and up.get("force_unload") == "cuda")
+        s.check("no sub-input of an option that was not chosen",
+                "mode.scale" not in up)
+
         # -- the latent upscale pass -----------------------------------------
         built = client.build({"prompt": "x", "upscale": True, "seed": 3})
         g = built["prompt"]
@@ -172,6 +191,10 @@ def run(slow: bool = False) -> Suite:
                 "seed" not in built)
         rtx = nodes_of(g, "RTXVideoSuperResolution")[0][1]["inputs"]
         s.equal("quality ULTRA as in the workflow", rtx["quality"], "ULTRA")
+        s.check("the multiplier lands on resize_type.scale, as the workflow saves it",
+                rtx.get("resize_type") == "scale by multiplier"
+                and rtx.get("resize_type.scale") == 2
+                and "resize_type.width" not in rtx)
         comp = nodes_of(g, "GetVideoComponents")[0]
         create = nodes_of(g, "CreateVideo")[0][1]["inputs"]
         s.check("audio and fps pass straight through from the source",
@@ -203,4 +226,47 @@ def run(slow: bool = False) -> Suite:
                 "No upscaler model" in built["note"])
         client.queue(built["prompt"])
         s.check("that graph is accepted too", True)
+
+    # -- the benchmark, end to end ------------------------------------------
+    import csv
+    import io
+    from contextlib import redirect_stdout
+
+    import bench
+    with comfy(delay=1.0) as mock, Workspace() as ws:
+        said = io.StringIO()
+        with redirect_stdout(said):
+            code = bench.main(["--url", mock.url, "--bases", "0.2,0.3",
+                               "--upscale", "off,on", "--rtx", "--seconds", "2",
+                               "--out", str(ws)])
+        s.equal("the benchmark finishes clean", code, 0)
+        runs = list(ws.iterdir())
+        report = runs[0] / "report.md" if runs else None
+        s.check("it writes a Markdown report and a CSV",
+                bool(report) and report.exists()
+                and (runs[0] / "report.csv").exists())
+        rows = list(csv.DictReader(io.StringIO(
+            (runs[0] / "report.csv").read_text()))) if runs else []
+        s.equal("one row per base size and upscale setting", len(rows), 4)
+        s.check("base sizes match the workflow's table",
+                {r["base_size"] for r in rows} == {"608x352", "736x416"})
+        s.check("the H3 upscale rows land at 0.6 MP (1056x608)",
+                all(r["out_size"] == "1056x608" for r in rows
+                    if r["h3_upscale"] == "True"))
+        s.check("sampling time and seconds per step are measured",
+                all(float(r["t_sample"]) > 0 and float(r["s_per_step"]) > 0
+                    for r in rows))
+        s.check("the upscale rows time the refine pass separately",
+                all(float(r["t_refine"]) > 0 for r in rows
+                    if r["h3_upscale"] == "True"))
+        s.check("total time is the render, not the socket teardown",
+                all(float(r["total"]) < float(r["t_sample"])
+                    + float(r.get("t_refine") or 0) + 1.5 for r in rows))
+        s.check("peak VRAM is read from the engine",
+                all(float(r["vram_peak_gb"]) > 6 for r in rows))
+        s.check("each clip is kept, with its RTX x2 beside it",
+                all((runs[0] / r["file"]).exists()
+                    and (runs[0] / r["rtx_file"]).exists() for r in rows))
+        s.check("the report names the GPU",
+                "RTX 4060" in report.read_text())
     return s

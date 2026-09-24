@@ -19,7 +19,8 @@ import requests
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from harness import Suite, Workspace, comfy, fake_weights, studio  # noqa: E402
+from harness import (Suite, Workspace, comfy, fake_weights,  # noqa: E402
+                     free_port, studio)
 
 RECORD_WEBM = """
 async () => {
@@ -253,5 +254,28 @@ def run(slow: bool = False) -> Suite:
 
             s.check("no page errors the whole way through", not errors,
                     "; ".join(errors)[:120])
+            browser.close()
+
+    # -- set up, but the engine is stopped: point at Start, not at setup ----
+    with Workspace() as ws, sync_playwright() as p:
+        models = ws / "models"
+        fake_weights(models)
+        dead = f"http://127.0.0.1:{free_port()}"
+        with studio(dead, ws / "data", models) as app:
+            browser = p.chromium.launch(executable_path=chromium_path() or None)
+            pg = browser.new_page(viewport={"width": 1400, "height": 900})
+            pg.goto(app.url)
+            pg.wait_for_timeout(1500)
+            pg.click('[data-view="create"]')
+            pg.fill("#description", "anything")
+            pg.click("#btnGenerate")
+            pg.wait_for_timeout(700)
+            s.check("a stopped engine is not offered a fresh install",
+                    not pg.is_visible("#veil-setup"))
+            s.check("it lands on the Engine page with Start ComfyUI in reach",
+                    pg.is_visible('[data-page="engine"]')
+                    and pg.is_visible("#btnStartEngine"))
+            s.check("and says what to do",
+                    "Start ComfyUI" in (pg.text_content("#toast") or ""))
             browser.close()
     return s

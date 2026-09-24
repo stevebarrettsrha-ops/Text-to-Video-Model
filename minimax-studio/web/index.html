@@ -1010,8 +1010,33 @@ function collect() {
   p.runs = S.batch;
   return p;
 }
+// Why a render cannot start, and where that is fixed. Setup is only for a
+// machine that was never set up: an engine that is merely stopped (a reboot,
+// a crash) must not be offered a fresh 56 GB install.
+function blockedFromRendering() {
+  var st = S.status;
+  if (st && st.ready) return false;
+  if (!st) { toast("Still connecting to the app — try again in a moment.", true); }
+  else if (!st.setup_complete) { openSetup(); }
+  else if (!st.comfy_online) {
+    show("engine");
+    toast("ComfyUI is not running. Press Start ComfyUI here, then Generate.", true);
+  } else if ((st.missing_models || []).length) {
+    show("models");
+    toast("Weights missing: " + st.missing_models.join(", ") +
+          ". Download them here.", true);
+  } else if (!st.nodes_ready) {
+    show("engine");
+    toast("ComfyUI is running without the MiniMax H3 nodes. Update ComfyUI "
+          + "and press Restart ComfyUI.", true);
+  } else {
+    show("engine");
+    toast("ComfyUI is not ready yet — see the Engine page.", true);
+  }
+  return true;
+}
 async function generate() {
-  if (!S.status || !S.status.ready) { openSetup(); return; }
+  if (blockedFromRendering()) return;
   var p = collect();
   if (!p.prompt && !p.refs.length && !p.ref_video) {
     show("create");
@@ -1544,7 +1569,7 @@ function updateBoardJobs() {
   });
 }
 async function boardGenerate(shot, btn) {
-  if (!S.status || !S.status.ready) { openSetup(); return null; }
+  if (blockedFromRendering()) return null;
   var index = S.board.indexOf(shot);
   var refs = [];
   if (shot.chain && index > 0) {

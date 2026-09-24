@@ -115,20 +115,59 @@ DEFAULT_CONFIG = {
 # --------------------------------------------------------------------------- #
 # config
 # --------------------------------------------------------------------------- #
+_write_lock = threading.Lock()
+
+
+def atomic_write(path: Path, text: str) -> None:
+    """Write through a temporary file and swap it in, so a crash mid-write
+    never leaves half a JSON document. On Windows the swap is retried: an
+    antivirus scan or OneDrive sync briefly holding the file is routine."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f"{path.name}.{threading.get_ident()}.tmp")
+    tmp.write_text(text, encoding="utf-8")
+    for attempt in range(10):
+        try:
+            os.replace(tmp, path)
+            return
+        except PermissionError:
+            if attempt == 9:
+                tmp.unlink(missing_ok=True)
+                raise
+            time.sleep(0.1)
+
+
+def quarantine(path: Path) -> Path | None:
+    """Move a file that will not parse aside, so the next save cannot bury
+    what was in it. Returns where it went."""
+    dest = path.with_name(f"{path.name}.bad-{time.strftime('%Y%m%d-%H%M%S')}")
+    try:
+        os.replace(path, dest)
+        print(f"[minimax-studio] {path.name} could not be read; kept as "
+              f"{dest.name}", flush=True)
+        return dest
+    except OSError:
+        return None
+
+
 def load_config() -> dict:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     cfg = dict(DEFAULT_CONFIG)
     if CONFIG_PATH.exists():
         try:
-            cfg.update(json.loads(CONFIG_PATH.read_text(encoding="utf-8")))
-        except Exception:
-            pass
+            saved = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+            if not isinstance(saved, dict):
+                raise ValueError("not an object")
+            cfg.update(saved)
+        except (OSError, ValueError):
+            # keep the damaged file for recovery; defaults are not silent
+            quarantine(CONFIG_PATH)
     return cfg
 
 
 def save_config(cfg: dict) -> None:
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    CONFIG_PATH.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
+    # several threads save (requests, setup, tasks): one writer at a time
+    with _write_lock:
+        atomic_write(CONFIG_PATH, json.dumps(cfg, indent=2))
 
 
 # --------------------------------------------------------------------------- #
@@ -762,24 +801,60 @@ class ComfyProcess:
         prog.log("Launching ComfyUI: " + " ".join(cmd))
         flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) \
             if platform.system() == "Windows" else 0
-        self.proc = subprocess.Popen(cmd, cwd=str(comfy_dir),
-                                     stdout=subprocess.PIPE,
-                                     stderr=subprocess.STDOUT, text=True,
-                                     bufsize=1, creationflags=flags)
-        threading.Thread(target=self._pump, args=(prog,), daemon=True).start()
+        # Output goes to a file, not a pipe. Closing the console on Windows
+        # kills this app without a word to the windowless engine; with a pipe
+        # its next progress line would hit a dead handle and fail every
+        # render. A file outlives us, so an engine the next launch adopts
+        # still works.
+        log = DATA_DIR / "comfy.log"
+        try:
+            out = open(log, "wb")
+        except OSError:                  # an orphan still holds it on Windows
+            log = DATA_DIR / f"comfy-{os.getpid()}.log"
+            out = open(log, "wb")
+        env = {**os.environ, "PYTHONUNBUFFERED": "1",
+               "PYTHONIOENCODING": "utf-8"}
+        try:
+            self.proc = subprocess.Popen(cmd, cwd=str(comfy_dir), stdout=out,
+                                         stderr=subprocess.STDOUT, env=env,
+                                         creationflags=flags)
+        finally:
+            out.close()                  # the child has its own handle
+        threading.Thread(target=self._pump, args=(prog, log, self.proc),
+                         daemon=True).start()
 
-    def _pump(self, prog: Progress) -> None:
-        assert self.proc and self.proc.stdout
-        for line in self.proc.stdout:
-            line = line.rstrip()
-            with self._lock:
-                self.lines.append(line)
-                if len(self.lines) > 2000:
-                    del self.lines[:1000]
-            if any(k in line for k in ("Error", "Traceback", "error:",
-                                       "IMPORT FAILED", "Starting server",
-                                       "out of memory")):
-                prog.log(f"ComfyUI: {line}")
+    def _pump(self, prog: Progress, log: Path, proc) -> None:
+        """Follow the engine's log file for as long as the engine runs.
+        Bytes are decoded leniently: one odd byte must not stop the reader."""
+        try:
+            fh = open(log, "rb")
+        except OSError:
+            return
+        buf = b""
+        with fh:
+            while True:
+                chunk = fh.read(65536)
+                if not chunk:
+                    if proc.poll() is not None:
+                        break
+                    time.sleep(0.3)
+                    continue
+                buf += chunk
+                *lines, buf = buf.split(b"\n")
+                for raw in lines:
+                    self._line(prog, raw.decode("utf-8", "replace").rstrip())
+        if buf:
+            self._line(prog, buf.decode("utf-8", "replace").rstrip())
+
+    def _line(self, prog: Progress, line: str) -> None:
+        with self._lock:
+            self.lines.append(line)
+            if len(self.lines) > 2000:
+                del self.lines[:1000]
+        if any(k in line for k in ("Error", "Traceback", "error:",
+                                   "IMPORT FAILED", "Starting server",
+                                   "out of memory")):
+            prog.log(f"ComfyUI: {line}")
 
     def tail(self, n: int = 40) -> list[str]:
         with self._lock:

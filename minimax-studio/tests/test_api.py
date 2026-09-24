@@ -474,6 +474,38 @@ def run(slow: bool = False) -> Suite:
             s.equal("a cancelled job says cancelled",
                     jobs[0]["status"], "cancelled")
 
+    # -- durability: a stalled reply, a newline title, a damaged gallery -----
+    with comfy(delay=3.0) as mock, Workspace() as ws:
+        models = ws / "models"
+        fake_weights(models)
+        with studio(mock.url, ws / "data", models) as app:
+            r = requests.post(app.url + "/api/generate", timeout=30, json={
+                "prompt": "hold on", "title": "Shot 1 — two lines\nof prompt"})
+            requests.post(mock.url + "/flaky", json={"history": 4}, timeout=10)
+            jobs = finish_jobs(app.url, timeout=60)
+            s.equal("dropped replies from ComfyUI are not a failed render",
+                    jobs[0]["status"], "done")
+            clip = requests.get(app.url + "/api/clips", timeout=10).json()[0]
+            got = requests.get(f"{app.url}/api/clip/{clip['id']}", timeout=10)
+            s.check("a clip whose title has a newline still streams",
+                    got.ok and "\n" not in got.headers.get(
+                        "Content-Disposition", ""),
+                    got.headers.get("Content-Disposition", "")[:80])
+
+        gallery = ws / "data" / "gallery.json"
+        gallery.write_text("[{\"id\": \"abc\", \"file\": \"a.mp4\"},  <- torn")
+        with studio(mock.url, ws / "data", models) as app:
+            s.equal("a damaged gallery reads as empty, not a 500",
+                    requests.get(app.url + "/api/clips", timeout=10).json(), [])
+            kept = list((ws / "data").glob("gallery.json.bad-*"))
+            s.check("and is kept aside, where the next save cannot bury it",
+                    len(kept) == 1 and "torn" in kept[0].read_text())
+            (ws / "data" / "board.json").write_text("{not json")
+            s.equal("a damaged board reads as empty",
+                    requests.get(app.url + "/api/board", timeout=10).json(), [])
+            s.check("and is kept aside too",
+                    bool(list((ws / "data").glob("board.json.bad-*"))))
+
     # -- the live preview, frame by frame ------------------------------------
     with comfy(delay=4.0) as mock, Workspace() as ws:
         models = ws / "models"

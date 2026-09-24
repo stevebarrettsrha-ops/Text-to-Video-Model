@@ -14,8 +14,14 @@ if [ -z "$PY" ]; then
 fi
 # a private venv: current Debian/Ubuntu refuse pip into the system Python
 # (PEP 668, "externally-managed-environment")
-if [ ! -x .venv/bin/python ]; then
+# A venv whose pip is missing is as good as none: a failed first attempt
+# (no python3-venv yet) leaves .venv/bin/python behind without pip, and a
+# distro upgrade can remove its interpreter. Rebuild it rather than fail
+# the same way on every run.
+if ! .venv/bin/python -m pip --version >/dev/null 2>&1; then
+  rm -rf .venv
   "$PY" -m venv .venv || {
+    rm -rf .venv
     echo "Could not create a virtual environment. On Debian/Ubuntu install" >&2
     echo "python3-venv (sudo apt install python3-venv), then run this again." >&2
     exit 1

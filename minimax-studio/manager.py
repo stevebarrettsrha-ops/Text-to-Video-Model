@@ -118,7 +118,8 @@ def spawn(kind: str, title: str, fn, meta: dict | None = None) -> Task:
 def stream(cmd: list[str], task: Task, keep: tuple[str, ...] = ()) -> int:
     task.log("$ " + " ".join(cmd))
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
-                            stderr=subprocess.STDOUT, text=True, bufsize=1)
+                            stderr=subprocess.STDOUT, text=True, bufsize=1,
+                            encoding="utf-8", errors="replace")
     assert proc.stdout
     for line in proc.stdout:
         line = line.rstrip()

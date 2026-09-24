@@ -60,6 +60,7 @@ FAKE_MP4 = b"\x00\x00\x00\x20ftypisom\x00\x00\x02\x00isomiso2mp41" + b"\x00" * 2
 # MediaRecorder) and POSTs it to /testvideo; from then on every render is
 # served as that webm. Without it, renders are FAKE_MP4 — header-only bytes,
 # fine for the API tests, undecodable by design.
+FLAKY = [0]                 # /history replies still to drop (POST /flaky)
 TEST_VIDEO: list = []       # [bytes] once a test has posted one
 
 
@@ -311,6 +312,11 @@ class H(BaseHTTPRequestHandler):
                 "name": "cuda:0 NVIDIA GeForce RTX 4060 : cudaMallocAsync",
                 "type": "cuda", "vram_total": 8_585_216_000,
                 "vram_free": 1_000_000_000 if busy else 7_500_000_000}]})
+        elif p.startswith("/history/") and FLAKY[0] > 0:
+            FLAKY[0] -= 1                 # a reply that never comes back
+            self.close_connection = True
+            self.connection.shutdown(2)
+            return
         elif p.startswith("/history/"):
             pid = p.rsplit("/", 1)[-1]
             with LOCK:
@@ -364,6 +370,9 @@ class H(BaseHTTPRequestHandler):
                     if pid in QUEUE_PENDING:     # as ComfyUI: gone, no history
                         QUEUE_PENDING.remove(pid)
             self._send(200, {})
+        elif p == "/flaky":              # test-only: drop the next N /history
+            FLAKY[0] = int(json.loads(raw or b"{}").get("history", 0))
+            self._send(200, {"flaky": FLAKY[0]})
         elif p == "/delay":              # test-only: render speed from now on
             global DELAY
             DELAY = float(json.loads(raw or b"{}").get("seconds", DELAY))

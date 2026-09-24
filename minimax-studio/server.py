@@ -10,6 +10,7 @@ import json
 import math
 import mimetypes
 import os
+import sys
 import threading
 import time
 import uuid
@@ -118,18 +119,19 @@ def _read_gallery_unlocked() -> list[dict]:
         return []
     try:
         value = json.loads(GALLERY_PATH.read_text(encoding="utf-8"))
-        return value if isinstance(value, list) else []
-    except (OSError, json.JSONDecodeError):
+        if not isinstance(value, list):
+            raise ValueError("not a list")
+    except (OSError, ValueError):
+        # set it aside: the next finished render must not write over it
+        bootstrap.quarantine(GALLERY_PATH)
         return []
+    # an entry without an id and a file would 500 every lookup after it
+    return [v for v in value if isinstance(v, dict)
+            and v.get("id") and v.get("file")]
 
 
 def _write_gallery_unlocked(items: list[dict]) -> None:
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    # replace() prevents a crash in the middle of a write from leaving half a
-    # JSON document behind.
-    temporary = GALLERY_PATH.with_suffix(".json.tmp")
-    temporary.write_text(json.dumps(items, indent=2), encoding="utf-8")
-    temporary.replace(GALLERY_PATH)
+    bootstrap.atomic_write(GALLERY_PATH, json.dumps(items, indent=2))
 
 
 def write_gallery(items: list[dict]) -> None:
@@ -165,15 +167,23 @@ def ws_listener() -> None:
                 "https://", "wss://")
             ws = websocket.WebSocket()
             ws.connect(f"{url}/ws?clientId={client.client_id}", timeout=10)
-            # the connect timeout would otherwise stay on every recv, and
-            # ComfyUI sends nothing for minutes while a 21 GB DiT loads
-            ws.settimeout(None)
+            # ComfyUI can be silent for minutes while a 21 GB DiT loads, so a
+            # quiet minute is not a dead socket: ping and keep listening. A
+            # half-open socket fails the ping and reconnects.
+            ws.settimeout(60)
             # ask for previews that name their prompt (event 4)
             ws.send(json.dumps({"type": "feature_flags",
                                 "data": {"supports_preview_metadata": True}}))
             current = None
             while True:
-                raw = ws.recv()
+                try:
+                    raw = ws.recv()
+                except websocket.WebSocketTimeoutException:
+                    if cfg["comfy_url"].replace("http://", "ws://").replace(
+                            "https://", "wss://") != url:
+                        break                     # the address was changed
+                    ws.ping()
+                    continue
                 if isinstance(raw, (bytes, bytearray)):
                     take_preview(bytes(raw), current)
                     continue
@@ -195,6 +205,11 @@ def ws_listener() -> None:
                     # card rendered just before the finish still asks for it
         except Exception:
             time.sleep(4)
+        finally:
+            try:
+                ws.close()
+            except Exception:
+                pass
 
 
 # --------------------------------------------------------------------------- #
@@ -218,6 +233,7 @@ def run_job(job_id: str, params: dict) -> None:
                   stage="Queued in ComfyUI")
 
         started = time.time()
+        unreachable_since = None
         while True:
             time.sleep(1.0)
             with jobs_lock:
@@ -227,11 +243,24 @@ def run_job(job_id: str, params: dict) -> None:
             if cancelled and client.cancel(prompt_id):
                 set_state(status="cancelled", stage="Cancelled")
                 return
-            err = client.failed(prompt_id)
+            try:
+                err = client.failed(prompt_id)
+                outs = [] if err else client.outputs(prompt_id)
+                unreachable_since = None
+            except requests.RequestException:
+                # a machine paging 33 GB through RAM can stall a reply past
+                # its timeout; that is not a failed render. Only an engine
+                # gone for minutes is.
+                unreachable_since = unreachable_since or time.time()
+                if time.time() - unreachable_since > 300:
+                    set_state(status="error", stage="Failed",
+                              error="ComfyUI stopped answering for five "
+                                    "minutes. Check the Engine page.")
+                    return
+                continue
             if err:
                 set_state(status="error", error=err, stage="Failed")
                 return
-            outs = client.outputs(prompt_id)
             if outs:
                 break
             wp = ws_progress.get(prompt_id) or {}
@@ -813,6 +842,12 @@ def api_generate():
 @app.get("/api/jobs")
 def api_jobs():
     with jobs_lock:
+        # finished jobs are only listed for three minutes; keep an hour for
+        # the preview endpoint and drop the rest, or a long session grows
+        cutoff = time.time() - 3600
+        for jid in [k for k, j in jobs.items() if j["status"] != "running"
+                    and j.get("finished", j["created"]) < cutoff]:
+            del jobs[jid]
         active = [j for j in jobs.values()
                   if j["status"] == "running"
                   or time.time() - j.get("finished", j["created"]) < 180]
@@ -932,8 +967,10 @@ def api_clip(image_id: str):
             if not path.exists():
                 return jsonify({"error": "That file is missing."}), 404
             mime = mimetypes.guess_type(path.name)[0] or "video/mp4"
+            # a header cannot carry a newline, and a board shot's title can
+            name = " ".join(str(item.get("title") or "clip").split())[:120]
             return send_file(path, mimetype=mime, conditional=True,
-                             download_name=f"{item['title']}{path.suffix}")
+                             download_name=f"{name or 'clip'}{path.suffix}")
     return jsonify({"error": "Clip not found."}), 404
 
 
@@ -945,10 +982,16 @@ def api_clip_delete(image_id: str):
         items = _read_gallery_unlocked()
         for item in items:
             if item.get("id") == image_id:
-                try:
-                    (CLIPS_DIR / item["file"]).unlink(missing_ok=True)
-                except (KeyError, OSError):
-                    pass
+                # Windows refuses while a player still has it open; the page
+                # lets go first, and a moment's retry covers the rest
+                for _ in range(10):
+                    try:
+                        (CLIPS_DIR / item["file"]).unlink(missing_ok=True)
+                        break
+                    except PermissionError:
+                        time.sleep(0.2)
+                    except (KeyError, OSError):
+                        break
         _write_gallery_unlocked([i for i in items if i.get("id") != image_id])
     return jsonify({"ok": True})
 
@@ -979,7 +1022,10 @@ def api_board():
             return jsonify([])
         try:
             raw = json.loads(BOARD_PATH.read_text(encoding="utf-8"))
-        except Exception:
+            if not isinstance(raw, list):
+                raise ValueError("not a list")
+        except (OSError, ValueError):
+            bootstrap.quarantine(BOARD_PATH)
             return jsonify([])
     return jsonify([s for s in (_clean_shot(x) for x in raw) if s])
 
@@ -993,8 +1039,7 @@ def api_board_save():
         return jsonify({"error": "Send the board as a list of shots."}), 400
     cleaned = [s for s in (_clean_shot(x) for x in shots[:200]) if s]
     with board_lock:
-        DATA_DIR.mkdir(parents=True, exist_ok=True)
-        BOARD_PATH.write_text(json.dumps(cleaned, indent=2), encoding="utf-8")
+        bootstrap.atomic_write(BOARD_PATH, json.dumps(cleaned, indent=2))
     return jsonify({"ok": True, "shots": len(cleaned)})
 
 
@@ -1078,13 +1123,19 @@ def ensure_engine_at_boot() -> None:
 
 # --------------------------------------------------------------------------- #
 def main() -> None:
+    # a redirected console on Windows is cp1252: no log line may crash it
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(errors="replace")
+        except Exception:
+            pass
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     CLIPS_DIR.mkdir(parents=True, exist_ok=True)
     threading.Thread(target=ws_listener, daemon=True).start()
     # the engine comes up on its own; the page can open meanwhile
     threading.Thread(target=ensure_engine_at_boot, daemon=True).start()
     url = f"http://127.0.0.1:{PORT}"
-    print(f"\n  MiniMax Studio  →  {url}\n")
+    print(f"\n  MiniMax Studio  ->  {url}\n")
     if os.environ.get("MINIMAX_STUDIO_NO_BROWSER") != "1":
         threading.Timer(1.2, lambda: webbrowser.open(url)).start()
     try:

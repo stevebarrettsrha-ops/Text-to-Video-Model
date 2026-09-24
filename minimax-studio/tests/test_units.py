@@ -263,6 +263,24 @@ def run(slow: bool = False) -> Suite:
     s.check("other events, and frames with no prompt to credit, are ignored",
             set(server.ws_preview) == {"pidA", "pidB"})
 
+    # -- a damaged config is kept, not silently replaced -------------------------
+    real = bootstrap.CONFIG_PATH
+    scratch = Path(tempfile.mkdtemp())
+    bootstrap.CONFIG_PATH = scratch / "config.json"
+    try:
+        bootstrap.CONFIG_PATH.write_text('{"setup_complete": true,')
+        cfg = bootstrap.load_config()
+        s.check("a torn config.json falls back to defaults",
+                cfg["setup_complete"] is False)
+        s.check("and the torn file is kept beside it for recovery",
+                len(list(scratch.glob("config.json.bad-*"))) == 1)
+        bootstrap.save_config(dict(cfg, setup_complete=True))
+        s.check("saving writes whole JSON, with no temp file left behind",
+                bootstrap.load_config()["setup_complete"] is True
+                and not list(scratch.glob("*.tmp")))
+    finally:
+        bootstrap.CONFIG_PATH = real
+
     # -- cancel reports whether ComfyUI let go -----------------------------------
     from comfy import ComfyClient
     s.equal("a cancel ComfyUI never heard is not reported done",

@@ -252,6 +252,24 @@ def run(slow: bool = False) -> Suite:
                 + str(tiles + 1), timeout=30000)
             s.check("the upscale lands as another tile", True)
 
+            # -- a short laptop screen, and the keyboard alone ---------------------
+            pg.keyboard.press("Escape")
+            pg.set_viewport_size({"width": 1366, "height": 650})
+            pg.click('[data-view="create"]')
+            pg.click("#btnSettings")
+            box = pg.eval_on_selector("#settingsPop", """e => {
+                const r = e.getBoundingClientRect();
+                return {top: r.top, bottom: r.bottom, h: innerHeight}; }""")
+            s.check("the settings popover fits a 650 px tall window",
+                    box["top"] >= 0 and box["bottom"] <= box["h"], str(box))
+            pg.click("#btnCloseSettings")
+            pg.set_viewport_size({"width": 1400, "height": 900})
+            pg.eval_on_selector("#feed .tile", "el => el.focus()")
+            pg.keyboard.press("Enter")
+            s.check("a clip opens from the keyboard (Tab to it, Enter)",
+                    pg.is_visible("#lightbox"))
+            pg.keyboard.press("Escape")
+
             s.check("no page errors the whole way through", not errors,
                     "; ".join(errors)[:120])
             browser.close()

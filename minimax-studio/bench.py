@@ -226,6 +226,10 @@ def fmt_s(v) -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
+    try:
+        sys.stdout.reconfigure(errors="replace")   # redirected on Windows
+    except Exception:
+        pass
     cfg = bootstrap.load_config()
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--url", default=cfg.get("comfy_url"),
@@ -288,13 +292,13 @@ def main(argv: list[str] | None = None) -> int:
     length = frame_length(a.seconds)
     plan = [(mp, up, n) for mp in bases for up in ups for n in range(a.runs)]
     print(f"{len(plan)} render(s) of {length} frames ({a.seconds:g} s) at "
-          f"{a.aspect}, {a.steps} steps, seed {a.seed} → {out}\n")
+          f"{a.aspect}, {a.steps} steps, seed {a.seed} -> {out}\n")
 
     rows = []
     for index, (mp, up, n) in enumerate(plan, 1):
         w, h = dimensions(mp, a.aspect)
         uw, uh = dimensions(a.upscale_mp, a.aspect) if up else (w, h)
-        label = f"{mp:g} MP {w}×{h}" + (f" → H3 {a.upscale_mp:g} MP" if up else "")
+        label = f"{mp:g} MP {w}×{h}" + (f" -> H3 {a.upscale_mp:g} MP" if up else "")
         print(f"[{index}/{len(plan)}] {label}" + (f" (run {n + 1})" if a.runs > 1 else ""),
               flush=True)
         params = {"prompt": a.prompt, "refs": refs, "seconds": a.seconds,
@@ -403,7 +407,7 @@ def write_reports(out: Path, rows: list[dict], a, stats: dict, lowvram) -> None:
             f"| {fmt_s(r.get('t_decode'))} | {fmt_s(r.get('t_audio'))} "
             f"| {str(r.get('vram_peak_gb')) + ' GB' if r.get('vram_peak_gb') else '—'} "
             f"| {str(r.get('ram_low_free_gb')) + ' GB' if r.get('ram_low_free_gb') is not None else '—'} "
-            f"| {fmt_s(r.get('rtx_total')) + ' → ' + r.get('rtx_size', '') if r.get('rtx_total') else '—'} |")
+            f"| {fmt_s(r.get('rtx_total')) + ' -> ' + r.get('rtx_size', '') if r.get('rtx_total') else '—'} |")
     notes = [r for r in rows if r.get("note")]
     if notes:
         lines += ["", "Notes:"] + [f"- {r['base_mp']:g} MP: {r['note']}" for r in notes]

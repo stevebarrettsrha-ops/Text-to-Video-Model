@@ -126,7 +126,7 @@
   .tile .over .meta{font-size:10.5px;color:#a9a9b4;margin-top:3px}
   .tile .acts{position:absolute;top:8px;right:8px;display:flex;gap:4px;opacity:0;
         transition:opacity .16s}
-  .tile:hover .acts{opacity:1}
+  .tile:hover .acts,.tile:focus-within .acts{opacity:1}
   .tile .acts button{width:28px;height:28px;border-radius:8px;background:rgba(8,8,10,.72);
         border:1px solid rgba(255,255,255,.1);color:#fff;display:grid;place-items:center}
   .tile .acts button:hover{background:rgba(8,8,10,.92)}
@@ -162,6 +162,7 @@
   .sugg button:hover{border-color:var(--accent);color:#cdbcff}
 
   /* ---------- popovers ---------- */
+  .pop{max-height:calc(100vh - 24px);overflow-y:auto}
   .pop{position:fixed;z-index:40;background:var(--panel);border:1px solid var(--line);
        border-radius:16px;padding:16px;width:min(420px,92vw);
        box-shadow:0 30px 70px -30px #000}
@@ -962,7 +963,9 @@ function placePop(pop, anchor) {
   pop.hidden = false;
   var r = anchor.getBoundingClientRect();
   var w = pop.offsetWidth;
-  pop.style.top = Math.min(r.bottom + 8, window.innerHeight - pop.offsetHeight - 12) + "px";
+  // never above the top edge: on a short window the popover scrolls instead
+  pop.style.top = Math.max(12, Math.min(r.bottom + 8,
+    window.innerHeight - pop.offsetHeight - 12)) + "px";
   pop.style.left = Math.max(12, Math.min(r.left, window.innerWidth - w - 12)) + "px";
 }
 
@@ -1134,6 +1137,15 @@ function tile(im) {
   el.addEventListener("mouseenter", function () { vid.play().catch(function () {}); });
   el.addEventListener("mouseleave", function () { vid.pause(); vid.currentTime = 0; });
   vid.addEventListener("click", function () { openLightbox(im); });
+  // a keyboard can open a clip too: Tab to it, Enter or Space
+  el.tabIndex = 0;
+  el.setAttribute("role", "button");
+  el.setAttribute("aria-label", "Open " + (im.title || "clip"));
+  el.addEventListener("keydown", function (e) {
+    if (e.target === el && (e.key === "Enter" || e.key === " ")) {
+      e.preventDefault(); openLightbox(im);
+    }
+  });
   el.querySelector(".over").addEventListener("click", function () { openLightbox(im); });
   el.querySelectorAll("[data-act]").forEach(function (b) {
     b.addEventListener("click", function (ev) {
@@ -1262,8 +1274,15 @@ function reuse(im) {
 }
 async function removeImage(im) {
   if (!confirm("Delete this clip?")) return;
-  await api("/api/clip/" + im.id, { method: "DELETE" });
+  // let go of the file first: on Windows a clip still streaming to a
+  // <video> cannot be deleted, and would be left behind on disk
   if (S.lightbox && S.lightbox.id === im.id) closeLightbox();
+  document.querySelectorAll("video").forEach(function (v) {
+    if ((v.getAttribute("src") || "").indexOf("/api/clip/" + im.id) === 0) {
+      v.pause(); v.removeAttribute("src"); v.load();
+    }
+  });
+  await api("/api/clip/" + im.id, { method: "DELETE" });
   loadImages();
 }
 function closeLightbox() {
@@ -1408,10 +1427,23 @@ async function continueClip(im) {
    through the whole sequence. The board itself lives in data/board.json,
    next to the gallery. */
 var boardSaveTimer = null;
+// Until the board has actually loaded, nothing may be saved: a failed load
+// (the server restarting under a reload) would otherwise post an empty or
+// one-shot board over the real one.
+var boardLoaded = false;
 async function loadBoard() {
-  try { S.board = await api("/api/board"); } catch (e) { S.board = []; }
+  try {
+    S.board = await api("/api/board");
+    var retried = !boardLoaded && S.board.length;
+    boardLoaded = true;
+    if (retried && S.view === "board") renderBoard();
+  }
+  catch (e) {
+    if (!boardLoaded) { S.board = []; setTimeout(loadBoard, 3000); }
+  }
 }
 function saveBoard(now) {
+  if (!boardLoaded) return;
   clearTimeout(boardSaveTimer);
   var push = function () {
     api("/api/board", { method: "POST",

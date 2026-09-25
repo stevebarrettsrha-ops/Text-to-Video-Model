@@ -25,6 +25,15 @@ from pathlib import Path
 
 import requests
 
+# The engine is always local. Without this, requests asks the system proxy
+# settings about 127.0.0.1 on every call — on Windows that is a registry read
+# and a reverse-DNS lookup, seconds per status poll, and a proxy that does not
+# exempt loopback turns a running engine into an "offline" one.
+_loopback = ["localhost", "127.0.0.1", "::1"]
+for _key in ("NO_PROXY", "no_proxy"):
+    _have = [h.strip() for h in os.environ.get(_key, "").split(",") if h.strip()]
+    os.environ[_key] = ",".join(_have + [h for h in _loopback if h not in _have])
+
 APP_DIR = Path(__file__).resolve().parent
 # Config, gallery and finished clips. MINIMAX_STUDIO_DATA moves the lot, which
 # is what lets the tests run against a throwaway folder — as in the sibling apps.
@@ -767,6 +776,9 @@ def _download_file(cfg: dict, repo: str, path: str, dest: Path,
 # --------------------------------------------------------------------------- #
 # ComfyUI process
 # --------------------------------------------------------------------------- #
+_ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
+
+
 class ComfyProcess:
     def __init__(self) -> None:
         self.proc: subprocess.Popen | None = None
@@ -788,7 +800,10 @@ class ComfyProcess:
               lowvram: bool = True) -> None:
         if self.alive():
             return
-        cmd = [python, "main.py", "--listen", "127.0.0.1", "--port", str(port),
+        # main.py by full path: /system_stats reports argv, and a bare
+        # "main.py" says nothing about which install is answering
+        cmd = [python, str(Path(comfy_dir).resolve() / "main.py"),
+               "--listen", "127.0.0.1", "--port", str(port),
                "--disable-auto-launch"]
         if lowvram:
             # Weights stream from system RAM rather than sitting in VRAM, and
@@ -847,6 +862,7 @@ class ComfyProcess:
             self._line(prog, buf.decode("utf-8", "replace").rstrip())
 
     def _line(self, prog: Progress, line: str) -> None:
+        line = _ANSI.sub("", line)        # ComfyUI colours its log levels
         with self._lock:
             self.lines.append(line)
             if len(self.lines) > 2000:
@@ -890,6 +906,11 @@ def comfy_port(url: str) -> int:
 def comfy_online(url: str) -> bool:
     try:
         return requests.get(f"{url}/system_stats", timeout=3).status_code == 200
+    except requests.exceptions.ReadTimeout:
+        # It took the connection but is slow to answer: an engine loading a
+        # 21 GB model through --lowvram, not an engine that is off. Calling
+        # it offline would offer a second Start onto a port already taken.
+        return True
     except Exception:
         return False
 
@@ -1045,6 +1066,25 @@ def comfy_stats(url: str) -> dict | None:
     except Exception:
         pass
     return None
+
+
+def engine_foreign(stats: dict | None, comfy_dir: str | Path | None) -> bool:
+    """Whether the engine answering is provably a different install.
+
+    Only an absolute main.py path proves anything. A relative one — this
+    app's own launches before it passed the full path, the portable build's
+    `ComfyUI\\main.py`, a hand-typed `python main.py` — says nothing about
+    where it runs, and accusing it would flag the right engine as foreign.
+    """
+    argv = (stats or {}).get("argv") or []
+    if not argv or not comfy_dir:
+        return False
+    ran = str(argv[0]).replace("\\", "/").lower()
+    if not (ran.startswith("/") or re.match(r"^[a-z]:/", ran)):
+        return False
+    wants = {str(d).replace("\\", "/").lower().rstrip("/") + "/"
+             for d in (comfy_dir, Path(comfy_dir).resolve())}
+    return not any(ran.startswith(w) for w in wants)
 
 
 def engine_lowvram(stats: dict | None) -> bool | None:

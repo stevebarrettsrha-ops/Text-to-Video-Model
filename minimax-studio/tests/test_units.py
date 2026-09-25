@@ -8,7 +8,9 @@ H3 itself.
 
 from __future__ import annotations
 
+import os
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -229,6 +231,56 @@ def run(slow: bool = False) -> Suite:
              bootstrap.engine_lowvram({"argv": ["main.py"]}),
              bootstrap.engine_lowvram({})], [True, False, None])
 
+    # -- which install is answering: only an absolute path proves "foreign" ----
+    mine = "D:\\AI\\Text-to-Video-Model-main\\minimax-studio\\ComfyUI"
+    foreign = bootstrap.engine_foreign
+    s.equal("a relative main.py (this app's own older launches) is not foreign",
+            [foreign({"argv": ["main.py", "--lowvram"]}, mine),
+             foreign({"argv": ["ComfyUI\\main.py"]}, mine),
+             foreign({}, mine), foreign({"argv": ["/x/main.py"]}, "")],
+            [False, False, False, False])
+    s.equal("the configured install, by full path, is not foreign either",
+            [foreign({"argv": [mine + "\\main.py"]}, mine),
+             foreign({"argv": [mine.lower().replace("\\", "/") + "/main.py"]},
+                     mine + "\\"),
+             foreign({"argv": ["/opt/mine/ComfyUI/main.py"]},
+                     "/opt/mine/ComfyUI")],
+            [False, False, False])
+    s.equal("a different install, by full path, is",
+            [foreign({"argv": ["C:\\ComfyUI_portable\\ComfyUI\\main.py"]}, mine),
+             foreign({"argv": ["/opt/mine/ComfyUI2/main.py"]},
+                     "/opt/mine/ComfyUI")],
+            [True, True])
+    s.check("the managed engine is launched by full path, so it can be told apart",
+            "resolve() / \"main.py\"" in Path(bootstrap.__file__).read_text())
+    s.equal("the engine console drops ComfyUI's colour codes",
+            bootstrap._ANSI.sub("", "\x1b[32m[INFO]\x1b[0m Starting server"),
+            "[INFO] Starting server")
+
+    # -- a busy engine is not an offline one ---------------------------------
+    import socket
+    import threading as _th
+    srv = socket.socket(); srv.bind(("127.0.0.1", 0)); srv.listen(1)
+    port = srv.getsockname()[1]
+    held = []
+    _th.Thread(target=lambda: held.append(srv.accept()), daemon=True).start()
+    t0 = time.time()
+    s.check("an engine that accepts but is slow to answer counts as online",
+            bootstrap.comfy_online(f"http://127.0.0.1:{port}"),
+            f"{time.time() - t0:.1f}s")
+    srv.close()
+    s.check("a closed port does not",
+            not bootstrap.comfy_online(f"http://127.0.0.1:{port}"))
+    import subprocess
+    env = {k: v for k, v in os.environ.items()
+           if k.lower() != "no_proxy"} | {"NO_PROXY": "corp.example"}
+    out = subprocess.run(
+        [sys.executable, "-c", "import bootstrap,os;print(os.environ['NO_PROXY'])"],
+        cwd=str(Path(bootstrap.__file__).parent), env=env,
+        capture_output=True, text=True, timeout=60).stdout.strip()
+    s.equal("loopback never goes through a system proxy, and theirs is kept",
+            out, "corp.example,localhost,127.0.0.1,::1")
+
     # -- the preview decoder is optional, and only with KJNodes --------------
     extras = bootstrap.extra_models(dict(bootstrap.DEFAULT_CONFIG))
     s.check("taeh3 is offered for the live preview, into vae_approx",
@@ -262,6 +314,20 @@ def run(slow: bool = False) -> Suite:
     server.take_preview(struct.pack(">II", 1, 2) + png, None)
     s.check("other events, and frames with no prompt to credit, are ignored",
             set(server.ws_preview) == {"pidA", "pidB"})
+
+    # -- a render with no steps to count still says what it is doing -----------
+    s.equal("each long silent stretch has a name",
+            [server.stage_for(c) for c in
+             ("UNETLoader", "LoraLoaderModelOnly", "MiniMaxH3SigmaShift",
+              "MiniMaxH3ReferenceToVideo", "KSampler", "VAEDecode",
+              "VAEDecodeAudio", "CreateVideo", "MinimaxH3LatentUpscaler3D", "")],
+            ["Loading the model", "Loading the model", "Loading the model",
+             "Reading the prompt", "Moving the model onto the GPU",
+             "Decoding the frames", "Decoding the audio", "Writing the video",
+             "Upscaling", "Loading the model"])
+    s.equal("and a running clock",
+            [server.elapsed(9.7), server.elapsed(65), server.elapsed(3600)],
+            ["9s", "1m 05s", "60m 00s"])
 
     # -- a damaged config is kept, not silently replaced -------------------------
     real = bootstrap.CONFIG_PATH

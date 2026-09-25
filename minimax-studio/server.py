@@ -196,7 +196,11 @@ def ws_listener() -> None:
                 if data.get("prompt_id"):
                     current = data["prompt_id"]
                 pid = current
-                if mtype == "progress" and pid:
+                if mtype == "executing" and pid and data.get("node"):
+                    # a new node: its name is the stage, and the last
+                    # sampler's "step 8 of 8" is no longer what is running
+                    ws_progress[pid] = {"node": str(data["node"])}
+                elif mtype == "progress" and pid:
                     ws_progress.setdefault(pid, {}).update(
                         value=data.get("value", 0), max=data.get("max", 0))
                 elif mtype in ("execution_success", "execution_error") and pid:
@@ -210,6 +214,39 @@ def ws_listener() -> None:
                 ws.close()
             except Exception:
                 pass
+
+
+def stage_for(class_type: str) -> str:
+    """What a node is doing, in words. Model loading and the first sampler
+    call are the long silent stretches on a small card, so they are named."""
+    c = class_type or ""
+    if not c:
+        return "Loading the model"
+    if "Sampler" in c and "Shift" not in c:
+        # --lowvram: the weights stream onto the GPU as sampling begins
+        return "Moving the model onto the GPU"
+    if "Loader" in c or "Lora" in c or "Override" in c or "Attention" in c \
+            or "SigmaShift" in c:
+        return "Loading the model"
+    if c in ("LoadImage", "LoadVideo", "LoadAudio", "GetVideoComponents"):
+        return "Reading the references"
+    if "ReferenceToVideo" in c or "TextEncode" in c or "Conditioning" in c:
+        return "Reading the prompt"
+    if "RTX" in c or "Upscal" in c:
+        return "Upscaling"
+    if c == "VAEDecodeAudio":
+        return "Decoding the audio"
+    if "VAEDecode" in c:
+        return "Decoding the frames"
+    if c in ("CreateVideo", "SaveVideo"):
+        return "Writing the video"
+    return c
+
+
+def elapsed(seconds: float) -> str:
+    seconds = int(seconds)
+    return f"{seconds // 60}m {seconds % 60:02d}s" if seconds >= 60 \
+        else f"{seconds}s"
 
 
 # --------------------------------------------------------------------------- #
@@ -265,12 +302,18 @@ def run_job(job_id: str, params: dict) -> None:
                 break
             wp = ws_progress.get(prompt_id) or {}
             value, maximum = wp.get("value", 0), wp.get("max", 0)
+            took = elapsed(time.time() - started)
             if maximum:
                 set_state(pct=round(6 + min(value / maximum, 1) * 88, 1),
-                          stage=f"Step {value} of {maximum}")
+                          stage=f"Step {value} of {maximum} · {took}")
             else:
-                set_state(pct=min(5 + (time.time() - started) / 4, 12),
-                          stage="Loading the model")
+                # no steps to count: the node's name and a running clock say
+                # it is alive, and the bar never walks backwards
+                node = (built["prompt"].get(wp.get("node") or "") or {})
+                with jobs_lock:
+                    was = jobs[job_id].get("pct") or 0
+                set_state(pct=max(was, min(5 + (time.time() - started) / 4, 12)),
+                          stage=f"{stage_for(node.get('class_type', ''))} · {took}")
             if time.time() - started > 6 * 3600:
                 set_state(status="error", stage="Timed out",
                           error="Nothing after six hours. On a small card that "
@@ -403,12 +446,9 @@ def api_status():
             and not any("minimax" in u.lower()
                         for u in payload.get("unets") or []))
         stats = bootstrap.comfy_stats(cfg["comfy_url"]) or {}
-        argv = (stats.get("argv") or [""])[0]
-        payload["engine_argv"] = argv
-        want = (str(Path(cfg["comfy_dir"])).replace("\\", "/").lower()
-                if cfg.get("comfy_dir") else "")
-        payload["engine_mismatch"] = bool(
-            argv and want and want not in argv.replace("\\", "/").lower())
+        payload["engine_argv"] = (stats.get("argv") or [""])[0]
+        payload["engine_mismatch"] = bootstrap.engine_foreign(
+            stats, cfg.get("comfy_dir"))
         # low-VRAM mode is configured, but the engine answering lacks it
         payload["engine_lowvram_off"] = bool(
             cfg.get("lowvram", True)
@@ -416,6 +456,13 @@ def api_status():
         payload["engine_managed"] = comfy_proc.alive()
     payload["ready"] = bool(online and payload["nodes_ready"] and not missing)
     return jsonify(payload)
+
+
+def _run_setup(*args) -> None:
+    try:
+        bootstrap.run_setup(*args)
+    finally:
+        manager.forget_torch()     # setup may have (re)installed it
 
 
 @app.post("/api/setup/start")
@@ -434,7 +481,7 @@ def api_setup_start():
         cfg["comfy_url"] = normal_url(cfg["comfy_url"])
         client.url = cfg["comfy_url"]
         save_config(cfg)
-        threading.Thread(target=bootstrap.run_setup,
+        threading.Thread(target=_run_setup,
                          args=(cfg, progress, comfy_proc, b.get("comfy_dir", ""),
                                b.get("mode", "auto")), daemon=True).start()
     except Exception:
@@ -664,7 +711,8 @@ def api_config():
 @app.get("/api/deps")
 def api_deps():
     live = client if comfy_online(cfg["comfy_url"]) else None
-    return jsonify({"items": manager.dependencies(cfg, live),
+    return jsonify({"items": manager.dependencies(cfg, live,
+                                                  starting=comfy_proc.alive()),
                     "torch_index": cfg.get("torch_index", "")})
 
 
@@ -1091,9 +1139,7 @@ def ensure_engine_at_boot() -> None:
                 and not client.has(marker):
             reasons.append(f"{node['label']} is installed but not loaded")
     stats = bootstrap.comfy_stats(url) or {}
-    argv = (stats.get("argv") or [""])[0]
-    want = str(Path(cfg["comfy_dir"])).replace("\\", "/").lower()
-    if argv and want and want not in argv.replace("\\", "/").lower():
+    if bootstrap.engine_foreign(stats, cfg["comfy_dir"]):
         reasons.append("a different install is answering the address")
     if cfg.get("lowvram", True) and bootstrap.engine_lowvram(stats) is False:
         reasons.append("it was started without low-VRAM mode (--lowvram)")

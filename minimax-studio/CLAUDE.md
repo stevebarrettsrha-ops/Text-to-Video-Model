@@ -127,3 +127,15 @@ ComfyUI does — so "accepted" there means the real server would take the graph
 too. `units` pins the frame rule and the resolution table to the workflow's
 own numbers, and checks the page's `frames()` against Python's
 `frame_length()` (JS `%` keeps the sign; that pair has drifted once).
+
+## Which engine is answering
+
+`bootstrap.engine_foreign()` is the only judge of "a different ComfyUI is on
+the address", and only an **absolute** `main.py` in `/system_stats` argv can
+prove it. A relative one (`main.py`, the portable build's `ComfyUI\main.py`)
+is unknown, never foreign — reading it as foreign once made the app warn about,
+and at boot replace, its own engine. The managed engine is launched by full
+path so it can always be told apart. A `/system_stats` that connects but times
+out is a busy engine (loading the DiT), not an offline one. Loopback is added
+to `NO_PROXY` at import so a Windows system proxy never sits between the app
+and the engine.

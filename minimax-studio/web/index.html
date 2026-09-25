@@ -541,7 +541,7 @@
         <div class="rowbtn">
           <button class="btn" id="btnRecheck">Recheck</button>
           <button class="btn go" id="btnInstallAll">Install everything missing</button>
-          <button class="btn" id="btnStartEngine">Start ComfyUI</button>
+          <button class="btn js-start" id="btnStartEngine">Start ComfyUI</button>
           <button class="btn" id="btnRestartEngine">Restart ComfyUI</button>
           <button class="btn" id="btnReRun">Run setup again</button>
         </div>
@@ -707,7 +707,7 @@
     </div>
     <div class="rowbtn">
       <button class="btn go" id="btnSaveCfg">Save</button>
-      <button class="btn" id="btnStartComfy">Start ComfyUI now</button>
+      <button class="btn js-start" id="btnStartComfy">Start ComfyUI now</button>
       <button class="btn" id="btnCloseCfg">Close</button>
     </div>
     <p class="note" id="cfg-note"></p>
@@ -1737,8 +1737,16 @@ async function loadPreflight() {
 }
 
 /* ========================= engine page ========================= */
-async function loadDeps() {
+var depsBusy = null;
+function loadDeps() {
+  // one report at a time: a Recheck during the page-open load joins it
+  if (!depsBusy) depsBusy = fetchDeps().finally(function () { depsBusy = null; });
+  return depsBusy;
+}
+async function fetchDeps() {
   var box = $("dep-list");
+  var btn = $("btnRecheck");
+  btn.disabled = true; btn.textContent = "Checking…";
   try {
     var d = await api("/api/deps");
     $("torch-index").value = d.torch_index || "";
@@ -1746,6 +1754,7 @@ async function loadDeps() {
     var bad = 0;
     d.items.forEach(function (it) {
       if (it.state === "missing") bad++;
+      if (it.id === "engine") S.depsOnline = it.state === "ok";
       var el = document.createElement("div");
       el.className = "fitem";
       el.innerHTML = '<div class="n"><b>' + esc(it.label) + "</b><span>" +
@@ -1756,7 +1765,9 @@ async function loadDeps() {
       if (it.action === "models") {
         right.appendChild(mkBtn("Open Models", function () { show("models"); }));
       } else if (it.action === "start") {
-        right.appendChild(mkBtn("Start", startEngine));
+        var sb = mkBtn("Start", startEngine);
+        sb.classList.add("js-start");
+        right.appendChild(sb);
       } else if (it.action) {
         var label = it.action === "update" ? "Update"
           : it.action === "reinstall" ? "Reinstall" : "Install";
@@ -1769,6 +1780,8 @@ async function loadDeps() {
     $("engineTag").hidden = bad === 0;
   } catch (e) {
     box.innerHTML = '<div class="empty bad-text">' + esc(e.message) + "</div>";
+  } finally {
+    btn.disabled = false; btn.textContent = "Recheck";
   }
 }
 function mkBtn(label, fn) {
@@ -1826,6 +1839,10 @@ async function installAllMissing() {
   } catch (e) { toast(e.message, true); }
 }
 async function startEngine() {
+  var btns = document.querySelectorAll(".js-start");
+  if (btns.length && btns[0].disabled) return;
+  btns.forEach(function (b) { b.disabled = true; b.dataset.label = b.textContent;
+                              b.textContent = "Starting…"; });
   try {
     var r = await api("/api/comfy/start", { method: "POST" });
     if (r.already) {
@@ -1837,6 +1854,11 @@ async function startEngine() {
       show("engine");
     }
   } catch (e) { toast(e.message, true); }
+  finally {
+    btns.forEach(function (b) { b.disabled = false;
+                                b.textContent = b.dataset.label || b.textContent; });
+    refreshStatus();
+  }
 }
 async function restartEngine() {
   var b = $("btnRestartEngine");
@@ -1859,7 +1881,10 @@ async function restartEngine() {
     }
     show("engine");
   } catch (e) { toast(e.message, true); }
-  finally { b.disabled = false; b.textContent = "Restart ComfyUI"; }
+  finally {
+    b.disabled = false; b.textContent = "Restart ComfyUI";
+    refreshStatus();
+  }
 }
 
 /* The engine's own console, polled while the Engine page is open. This is
@@ -1902,6 +1927,11 @@ async function pollEngineLog() {
     state = "Offline. Press Start ComfyUI.";
   }
   $("engine-state").textContent = state;
+  // the dependency list is a snapshot; its Engine row follows the live state
+  if (S.depsOnline !== undefined && S.depsOnline !== !!d.online) {
+    S.depsOnline = !!d.online;
+    loadDeps();
+  }
   engineLogTimer = setTimeout(pollEngineLog, 2500);
 }
 var taskTimer = null;

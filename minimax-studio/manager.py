@@ -150,10 +150,30 @@ def _probe(python: str, code: str, timeout: int = 90) -> tuple[int, str]:
         return 1, str(exc)
 
 
+# `import torch` is 5-15 s on Windows, and the report runs on every visit to
+# the Engine page and every Recheck. What it finds changes only when torch is
+# (re)installed, which clears this; a failed probe is never kept.
+_TORCH_SEEN: dict[str, tuple[int, str]] = {}
+
+
+def _torch_probe(python: str, code: str) -> tuple[int, str]:
+    if python in _TORCH_SEEN:
+        return _TORCH_SEEN[python]
+    result = _probe(python, code)
+    if result[0] == 0:
+        _TORCH_SEEN[python] = result
+    return result
+
+
+def forget_torch() -> None:
+    _TORCH_SEEN.clear()
+
+
 # --------------------------------------------------------------------------- #
 # dependency report
 # --------------------------------------------------------------------------- #
-def dependencies(cfg: dict, client=None) -> list[dict]:
+def dependencies(cfg: dict, client=None,
+                 starting: bool = False) -> list[dict]:
     items: list[dict] = []
 
     try:
@@ -208,7 +228,7 @@ def dependencies(cfg: dict, client=None) -> list[dict]:
     if py_comfy:
         kind = "portable python_embeded" if "python_embeded" in py_comfy \
             else "virtual environment"
-        code, out = _probe(py_comfy,
+        code, out = _torch_probe(py_comfy,
                            "import torch,json;"
                            "print(json.dumps({'v':torch.__version__,"
                            "'cuda':torch.cuda.is_available(),"
@@ -267,11 +287,19 @@ def dependencies(cfg: dict, client=None) -> list[dict]:
                       "action": "models"})
 
     online = bootstrap.comfy_online(cfg["comfy_url"])
-    items.append({"id": "engine", "label": "Engine",
-                  "state": "ok" if online else "missing",
-                  "detail": cfg["comfy_url"] if online
-                  else "ComfyUI is not answering.",
-                  "action": None if online else "start"})
+    if online:
+        items.append({"id": "engine", "label": "Engine", "state": "ok",
+                      "detail": cfg["comfy_url"], "action": None})
+    elif starting:
+        # launched and loading — not missing, and a second Start would only
+        # collide with it on the port
+        items.append({"id": "engine", "label": "Engine", "state": "warn",
+                      "detail": "Starting — the first start is slow; the "
+                                "console below shows how far it has got.",
+                      "action": None})
+    else:
+        items.append({"id": "engine", "label": "Engine", "state": "missing",
+                      "detail": "ComfyUI is not answering.", "action": "start"})
     return items
 
 
@@ -290,16 +318,21 @@ def install_dependency(dep_id: str, cfg: dict, opts: dict) -> Task:
     title = node["label"] if node else titles.get(dep_id, dep_id)
 
     def run(task: Task) -> None:
-        if dep_id == "git":
-            _install_git(task)
-        elif dep_id == "comfyui":
-            _install_comfyui(task, cfg)
-        elif dep_id == "torch":
-            _install_torch(task, cfg, opts)
-        elif node:
-            _install_node(task, cfg, node)
-        else:
-            raise RuntimeError(f"Nothing to install for '{dep_id}'.")
+        try:
+            if dep_id == "git":
+                _install_git(task)
+            elif dep_id == "comfyui":
+                _install_comfyui(task, cfg)
+            elif dep_id == "torch":
+                _install_torch(task, cfg, opts)
+            elif node:
+                _install_node(task, cfg, node)
+            else:
+                raise RuntimeError(f"Nothing to install for '{dep_id}'.")
+        finally:
+            # any install can move torch (a node's requirements included):
+            # the next report probes it afresh, even if a Recheck ran mid-way
+            forget_torch()
 
     return spawn("dependency", title, run, {"dep": dep_id})
 

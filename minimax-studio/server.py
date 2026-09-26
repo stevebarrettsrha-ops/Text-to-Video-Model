@@ -350,6 +350,7 @@ def run_job(job_id: str, params: dict) -> None:
                 "sampler": params.get("sampler"),
                 "scheduler": params.get("scheduler"),
                 "upscaled": built.get("upscaled"),
+                "scale": params.get("scale"),
                 "note": built.get("note", ""),
                 "seed": built.get("seed"), "batch_index": index,
                 "model": (built.get("files") or {}).get("dit", ""),

@@ -1125,14 +1125,20 @@ function tile(im) {
     '<button data-act="del" title="Delete"><svg viewBox="0 0 24 24">' +
     '<path d="M6 6l12 12M18 6 6 18"/></svg></button></div>' +
     '<div class="over"><div class="cap">' + esc(im.prompt || im.title) + "</div>" +
-    '<div class="meta">' + (im.width || "?") + "×" + (im.height || "?") + " · " +
+    '<div class="meta"><span class="px">' + (im.width || "?") + "×" +
+    (im.height || "?") + "</span> · " +
     (im.seconds || "?") + "s" + (im.upscaled ? " · upscaled" : "") +
+    (im.kind === "rtx" ? " · RTX ×" + (im.scale || 2) : "") +
     (im.seed == null ? "" : " · seed " + im.seed) + "</div></div>";
   var vid = el.querySelector("video");
   // Without this a tile is a black rectangle until you hover it: the browser
   // fetches metadata but paints no frame. Nudging past zero forces one.
   vid.addEventListener("loadedmetadata", function () {
     try { vid.currentTime = 0.1; } catch (e) { /* seek not ready yet */ }
+    // the file's own size, not the one the job expected — an upscale that
+    // did not upscale shows here
+    if (vid.videoWidth)
+      el.querySelector(".px").textContent = vid.videoWidth + "×" + vid.videoHeight;
   });
   el.addEventListener("mouseenter", function () { vid.play().catch(function () {}); });
   el.addEventListener("mouseleave", function () { vid.pause(); vid.currentTime = 0; });
@@ -1310,7 +1316,8 @@ function openLightbox(im, inSeq) {
   function short(x) {
     return String(x || "").split(/[\\/]/).pop().replace(/\.safetensors$/, "");
   }
-  var rows = [["Size", (im.width || "?") + " × " + (im.height || "?")],
+  var rows = [["Size", '<span id="lbSize">' + esc(im.width || "?") + " × " +
+               esc(im.height || "?") + "</span>"],
               ["Length", (im.seconds || "?") + " s · " + (im.length || "?") +
                " frames"],
               // an RTX pass has no seed of its own — show a dash, not a blank
@@ -1323,11 +1330,18 @@ function openLightbox(im, inSeq) {
   if (im.ref_video) rows.push(["Motion video", short(im.ref_video)]);
   if (im.voice) rows.push(["Reference voice", short(im.voice)]);
   if (im.upscaled) rows.push(["Latent upscale", "yes"]);
-  if (im.kind === "rtx") rows.push(["RTX upscale", "yes"]);
+  if (im.kind === "rtx") rows.push(["RTX upscale", "×" + (im.scale || 2)]);
   if (im.note) rows.push(["Note", im.note]);
   $("lbMeta").innerHTML = rows.map(function (r) {
-    return '<div class="kv"><span>' + esc(r[0]) + "</span><b>" + esc(r[1]) +
+    var v = r[0] === "Size" ? r[1] : esc(r[1]);   // Size is built above, no input
+    return '<div class="kv"><span>' + esc(r[0]) + "</span><b>" + v +
       "</b></div>"; }).join("");
+  var showSize = function () {
+    var box = $("lbMeta").querySelector("#lbSize");
+    if (box && vid.videoWidth) box.textContent = vid.videoWidth + " × " + vid.videoHeight;
+  };
+  if (vid.readyState >= 1) showSize();
+  else vid.addEventListener("loadedmetadata", showSize, { once: true });
   var rtx = S.status && S.status.capabilities && S.status.capabilities.rtx;
   $("lbUpscale").hidden = !rtx;
   $("lightbox").hidden = false;
@@ -1696,7 +1710,9 @@ function playBoard() {
   openLightbox(clips[0], true);
 }
 async function rtxUpscale(scale) {
-  if (!S.lightbox) return;
+  var b = $("lbUpscale");
+  if (!S.lightbox || b.disabled) return;
+  b.disabled = true;                      // one click, one copy
   try {
     await api("/api/upscale/" + S.lightbox.id, { method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -1707,6 +1723,7 @@ async function rtxUpscale(scale) {
           + "this one is quick.");
     pollJobs();
   } catch (e) { toast(e.message, true); }
+  finally { b.disabled = false; }
 }
 
 /* ========================= preflight ========================= */

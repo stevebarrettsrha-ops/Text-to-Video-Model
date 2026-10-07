@@ -41,13 +41,25 @@ def run(slow: bool = False) -> Suite:
         # -- the plain clip --------------------------------------------------
         built = client.build({"prompt": "a man walks to the window",
                               "seconds": 6, "megapixels": 0.2,
-                              "aspect": "16:9", "steps": 8, "seed": 7})
+                              "output": "720x360", "steps": 8, "seed": 7})
         g = built["prompt"]
         client.queue(g)
         s.check("ComfyUI accepts the plain clip", True)
         s.equal("158 frames for six seconds", built["length"], 158)
-        s.equal("608x352 for 0.2 MP 16:9",
-                (built["width"], built["height"]), (608, 352))
+        s.equal("the clip is exactly 720x360",
+                (built["width"], built["height"]), (720, 360))
+        r2v_size = nodes_of(g, "MiniMaxH3ReferenceToVideo")[0][1]["inputs"]
+        s.equal("H3 renders the 2:1 base, 640x320 for 0.2 MP",
+                (r2v_size["width"], r2v_size["height"]), (640, 320))
+        scale = nodes_of(g, "ImageScale")
+        s.check("the decoded frames are sized to the output, centre-cropped",
+                len(scale) == 1 and scale[0][1]["inputs"]["width"] == 720
+                and scale[0][1]["inputs"]["height"] == 360
+                and scale[0][1]["inputs"]["crop"] == "center"
+                and scale[0][1]["inputs"]["upscale_method"] == "lanczos")
+        s.check("CreateVideo takes the sized frames",
+                nodes_of(g, "CreateVideo")[0][1]["inputs"]["images"]
+                == [scale[0][0], 0])
         s.equal("the seed asked for is the seed used", built["seed"], 7)
 
         r2v = nodes_of(g, "MiniMaxH3ReferenceToVideo")[0][1]["inputs"]
@@ -154,16 +166,30 @@ def run(slow: bool = False) -> Suite:
 
         # -- the upscaler's own size and low-VRAM settings --------------------
         built = client.build({"prompt": "x", "upscale": True, "seed": 3,
-                              "upscale_mp": 0.5})
+                              "output": "720x1280"})
         up = nodes_of(built["prompt"], "MinimaxH3LatentUpscaler3D")[0][1]["inputs"]
-        s.check("the upscale target lands on the dynamic combo's mode.megapixels",
-                up.get("mode") == "megapixels" and up.get("mode.megapixels") == 0.5)
+        s.check("the upscaler refines at the output's own size, 736x1280",
+                up.get("mode") == "target dimensions"
+                and up.get("mode.width") == 736 and up.get("mode.height") == 1280)
+        s.equal("and the clip still comes out at exactly 720x1280",
+                (built["width"], built["height"]), (720, 1280))
+        client.queue(built["prompt"])
+        s.check("ComfyUI accepts the portrait upscale graph", True)
         s.check("temporal chunking, fp16 and force-unload as in the workflow",
                 up.get("enable_temporal_chunking") is True
                 and up.get("precision") == "fp16"
                 and up.get("force_unload") == "cuda")
         s.check("no sub-input of an option that was not chosen",
-                "mode.scale" not in up)
+                "mode.scale" not in up and "mode.megapixels" not in up)
+        # an upscaler with no weights lists a placeholder it then refuses
+        real = client.node_inputs("MinimaxH3LatentUpscaler3D")["model_name"]
+        saved = list(real[0])
+        real[0][:] = ["(place models in: /x/latent_upscale_models)"]
+        try:
+            s.equal("the node's '(place models in…)' placeholder is no model",
+                    client.upscaler_models(), [])
+        finally:
+            real[0][:] = saved
 
         # -- the latent upscale pass -----------------------------------------
         built = client.build({"prompt": "x", "upscale": True, "seed": 3})
@@ -240,7 +266,7 @@ def run(slow: bool = False) -> Suite:
         client = ComfyClient(nomodel.url)
         built = client.build({"prompt": "x", "upscale": True})
         s.check("upscaler node without its model -> base size with a note",
-                "No upscaler model" in built["note"])
+                "No latent upscaler model" in built["note"])
         client.queue(built["prompt"])
         s.check("that graph is accepted too", True)
 
@@ -265,11 +291,10 @@ def run(slow: bool = False) -> Suite:
         rows = list(csv.DictReader(io.StringIO(
             (runs[0] / "report.csv").read_text()))) if runs else []
         s.equal("one row per base size and upscale setting", len(rows), 4)
-        s.check("base sizes match the workflow's table",
-                {r["base_size"] for r in rows} == {"608x352", "736x416"})
-        s.check("the H3 upscale rows land at 0.6 MP (1056x608)",
-                all(r["out_size"] == "1056x608" for r in rows
-                    if r["h3_upscale"] == "True"))
+        s.check("base sizes are the 2:1 renders under 720x360",
+                {r["base_size"] for r in rows} == {"640x320", "704x352"})
+        s.check("every row comes out at 720x360",
+                all(r["out_size"] == "720x360" for r in rows))
         s.check("sampling time and seconds per step are measured",
                 all(float(r["t_sample"]) > 0 and float(r["s_per_step"]) > 0
                     for r in rows))

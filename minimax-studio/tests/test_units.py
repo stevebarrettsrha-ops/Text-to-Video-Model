@@ -17,7 +17,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import bootstrap                                   # noqa: E402
 import manager                                     # noqa: E402
-from comfy import dimensions, frame_length         # noqa: E402
+from comfy import (OUTPUTS, base_size, cover, dimensions,   # noqa: E402
+                   frame_length, output_size)
 from harness import Suite                          # noqa: E402
 
 # The workflow's MarkdownNote: megapixels at 16:9 -> width x height.
@@ -79,6 +80,24 @@ def run(slow: bool = False) -> Suite:
     s.equal("a junk aspect falls back to 16:9",
             dimensions(0.2, "banana"), dimensions(0.2, "16:9"))
 
+    # -- the two output sizes -----------------------------------------------
+    s.equal("a clip is 720x360 or 720x1280, nothing else",
+            sorted(OUTPUTS.values()), [(720, 360), (720, 1280)])
+    s.equal("an unknown output falls back to 720x360",
+            output_size("1920x1080"), (720, 360))
+    s.equal("H3 refines at the multiple-of-32 frame covering the output",
+            (cover(720, 360), cover(720, 1280)), ((736, 384), (736, 1280)))
+    s.equal("0.2 MP at 720x360 renders a 2:1 base",
+            base_size(0.2, 720, 360), (640, 320))
+    s.equal("0.2 MP at 720x1280 is 9:16, as before",
+            base_size(0.2, 720, 1280), (352, 608))
+    s.check("the base never has more pixels than the output",
+            all(base_size(mp / 10, w, h)[0] <= w
+                and base_size(mp / 10, w, h)[1] <= h
+                for mp in range(1, 21) for w, h in OUTPUTS.values()))
+    s.equal("past the cap: the largest frame inside 720x360, not 736 wide",
+            base_size(0.8, 720, 360), (704, 352))
+
     # -- the model set ------------------------------------------------------
     cfg = dict(bootstrap.DEFAULT_CONFIG)
     items = bootstrap.model_set(cfg)
@@ -88,6 +107,18 @@ def run(slow: bool = False) -> Suite:
                                            bootstrap.AUDIO_VAE["name"]})
     s.check("every file knows where it goes",
             all(i["folder"] in manager.MODEL_FOLDERS for i in items))
+    extras = {i["name"]: i for i in bootstrap.extra_models(cfg)}
+    up = extras.get(bootstrap.UPSCALER_MODEL["name"])
+    s.check("setup fetches the latent upscaler's weights, where its node looks",
+            bool(up) and up["folder"] == "latent_upscale_models"
+            and up["folder"] in manager.MODEL_FOLDERS
+            and up["repo"] == bootstrap.UPSCALER_REPO)
+    s.check("and installs the upscaler node itself",
+            "upscaler" in {n["id"] for n in bootstrap.wanted_nodes(cfg)})
+    s.equal("a downloaded upscaler file lands in latent_upscale_models",
+            manager.guess_folder(bootstrap.UPSCALER_MODEL["path"],
+                                 bootstrap.UPSCALER_REPO),
+            "latent_upscale_models")
     cfg["turbo"] = "4step"
     lora = [i for i in bootstrap.model_set(cfg) if i["folder"] == "loras"][0]
     s.check("the 4-step turbo comes from its own repo at the repo root",
@@ -284,11 +315,16 @@ def run(slow: bool = False) -> Suite:
     # -- the preview decoder is optional, and only with KJNodes --------------
     extras = bootstrap.extra_models(dict(bootstrap.DEFAULT_CONFIG))
     s.check("taeh3 is offered for the live preview, into vae_approx",
-            [(m["name"], m["folder"], m["role"]) for m in extras]
-            == [("taeh3.safetensors", "vae_approx", "optional")])
-    s.equal("and not without KJNodes",
+            ("taeh3.safetensors", "vae_approx", "optional")
+            in [(m["name"], m["folder"], m["role"]) for m in extras])
+    s.check("and not without KJNodes",
+            "taeh3.safetensors" not in
+            [m["name"] for m in bootstrap.extra_models(
+                dict(bootstrap.DEFAULT_CONFIG, want_kjnodes=False))])
+    s.equal("nothing extra with neither KJNodes nor the upscaler",
             bootstrap.extra_models(dict(bootstrap.DEFAULT_CONFIG,
-                                        want_kjnodes=False)), [])
+                                        want_kjnodes=False,
+                                        want_upscaler=False)), [])
 
     # -- live-preview frames off the websocket ---------------------------------
     import json as _json

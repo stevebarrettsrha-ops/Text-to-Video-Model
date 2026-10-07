@@ -25,7 +25,8 @@ from bootstrap import (APP_DIR, CUSTOM_NODES, MODEL_REPO, PRECISIONS,
 
 DEFAULT_ENDPOINT = bootstrap.HF_BASE
 MODEL_FOLDERS = ["diffusion_models", "text_encoders", "vae", "loras",
-                 "vae_approx", "checkpoints", "upscale_models"]
+                 "vae_approx", "checkpoints", "upscale_models",
+                 "latent_upscale_models"]
 
 
 # --------------------------------------------------------------------------- #
@@ -205,6 +206,8 @@ def dependencies(cfg: dict, client=None,
             loaded = client.has("RTXVideoSuperResolution")
         if client is not None and node["id"] == "kjnodes":
             loaded = client.has("ModelPreviewOverrideKJ")
+        if client is not None and node["id"] == "upscaler":
+            loaded = client.has("MinimaxH3LatentUpscaler3D")
         if loaded:
             # The engine has the node, wherever it lives on disk — a copy
             # installed through ComfyUI-Manager sits under its own folder
@@ -435,6 +438,8 @@ def guess_folder(path: str, repo: str = "") -> str:
     if head in MODEL_FOLDERS:
         return head
     low = path.lower()
+    if "latent_upscaler" in low or "latent_upscaler" in (repo or "").lower():
+        return "latent_upscale_models"
     # The repo name is often the only place the word "lora" appears — the files
     # themselves are usually named after the style.
     if "lora" in low or "lora" in (repo or "").lower():

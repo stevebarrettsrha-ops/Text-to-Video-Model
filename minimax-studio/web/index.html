@@ -417,11 +417,9 @@
             <span class="pill on" id="modePill" title="The active H3 generation mode">
               <svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h12M4 18h8"/></svg>
               <span id="modeLabel">Text to video</span></span>
-            <div class="chips" id="segRatio">
-              <button class="on" data-v="16:9">16:9</button>
-              <button data-v="9:16">9:16</button>
-              <button data-v="1:1">1:1</button>
-              <button data-v="4:3">4:3</button>
+            <div class="chips" id="segRatio" title="Every clip comes out at exactly this size">
+              <button class="on" data-v="720x360">720×360</button>
+              <button data-v="720x1280">720×1280</button>
             </div>
             <div class="chips" id="segSeconds">
               <button data-v="2">2s</button>
@@ -588,9 +586,9 @@
 <!-- settings popover -->
 <div class="pop" id="settingsPop" hidden>
   <h3>Generation</h3>
-  <div class="orow"><span class="lab">Size</span><div class="ctl"><div class="slider">
+  <div class="orow"><span class="lab">Base size</span><div class="ctl"><div class="slider">
     <input type="range" id="mp-sl" min="0.1" max="0.8" step="0.1" value="0.2">
-    <span class="v" id="sizeVal">608×352</span></div></div></div>
+    <span class="v" id="sizeVal">640×320</span></div></div></div>
   <div class="orow"><span class="lab">Length</span><div class="ctl"><div class="slider">
     <input type="range" id="sec-sl" min="1" max="12" step="0.5" value="6">
     <span class="v" id="lenVal">6.0s</span></div></div></div>
@@ -610,7 +608,7 @@
     <select id="attn-sel"><option value="">default</option></select></div></div>
   <div class="orow"><span class="lab">Latent upscale pass</span><div class="ctl">
     <div class="chips" id="segUpscale">
-      <button class="on" data-v="off">Off</button><button data-v="on">On</button>
+      <button data-v="off">Off</button><button class="on" data-v="on">On</button>
     </div></div></div>
   <div class="orow"><span class="lab">Tiled decode</span><div class="ctl">
     <div class="chips" id="segTiled">
@@ -721,7 +719,7 @@
 
 /* ========================= state ========================= */
 var S = {
-  view: "home", ratio: "16:9", mp: 0.2, seconds: 6, refs: [], voice: null,
+  view: "home", output: "720x360", mp: 0.2, seconds: 6, refs: [], voice: null,
   motion: null,
   status: null, jobs: [], images: [], libFilter: "", batch: 1,
   setupCursor: 0, taskId: null, taskCursor: 0, setupSeen: false, lightbox: null,
@@ -763,12 +761,26 @@ function grow(ta) {
 }
 
 /* ========================= size ========================= */
-var RATIOS = { "16:9": [16, 9], "9:16": [9, 16], "1:1": [1, 1], "4:3": [4, 3] };
+// The only sizes a clip comes out at — comfy.OUTPUTS on the server.
+var OUTPUTS = { "720x360": [720, 360], "720x1280": [720, 1280] };
+function outDims() {
+  var o = OUTPUTS[S.output] || OUTPUTS["720x360"];
+  return { w: o[0], h: o[1] };
+}
+// The base render, as comfy.base_size() works it out: megapixels at the
+// output's aspect, multiples of 32, never more pixels than the output has.
 function dims() {
-  var r = RATIOS[S.ratio] || [16, 9];
-  var unit = Math.sqrt(S.mp * 1024 * 1024 / (r[0] * r[1]));
-  return { w: Math.max(32, Math.round(r[0] * unit / 32) * 32),
-           h: Math.max(32, Math.round(r[1] * unit / 32) * 32) };
+  var o = outDims();
+  if (S.mp * 1024 * 1024 >= o.w * o.h)
+    return { w: Math.floor(o.w / 32) * 32, h: Math.floor(o.h / 32) * 32 };
+  var unit = Math.sqrt(S.mp * 1024 * 1024 / (o.w * o.h));
+  return { w: Math.max(32, Math.round(o.w * unit / 32) * 32),
+           h: Math.max(32, Math.round(o.h * unit / 32) * 32) };
+}
+function setOutput(key) {
+  S.output = OUTPUTS[key] ? key : "720x360";
+  $("segRatio").querySelectorAll("button").forEach(function (b) {
+    b.classList.toggle("on", b.dataset.v === S.output); });
 }
 // H3 wants (length - 5) divisible by 17, same as the workflow's expression
 // node. The expression runs under Python's modulo, where (5 - n % 17) % 17 is
@@ -779,13 +791,17 @@ function frames(sec, fps) {
   return n + (((5 - (n % 17)) % 17) + 17) % 17;
 }
 function syncSize() {
-  var d = dims();
+  var d = dims(), o = outDims();
   var f = frames(S.seconds, 24);
   $("sizeVal").textContent = d.w + "×" + d.h;
   $("lenVal").textContent = (f / 24).toFixed(1) + "s";
   var note = $("costNote");
   if (note) {
-    note.textContent = d.w + "×" + d.h + ", " + f + " frames at 24 fps — " +
+    note.textContent = o.w + "×" + o.h + " (rendered at " + d.w + "×" + d.h +
+      (segOn("segUpscale") === "on"
+        ? ", refined at full size by the latent upscale pass)"
+        : ", then resized — turn the latent upscale pass on for full detail)") +
+      ", " + f + " frames at 24 fps — " +
       (f / 24).toFixed(1) + " seconds of video and audio. Length snaps so that " +
       "(frames − 5) divides by 17, which is what H3 expects.";
   }
@@ -794,7 +810,10 @@ function syncSize() {
 
 /* ========================= draft ========================= */
 function saveDraft() {
-  store("mm.draft", { prompt: $("description").value, ratio: S.ratio, mp: S.mp,
+  // v2: fixed output sizes, and the latent upscale pass on by default — an
+  // older draft's saved "off" is not carried over
+  store("mm.draft", { v: 2, prompt: $("description").value, output: S.output,
+    mp: S.mp,
     seconds: S.seconds, voice: S.voice, motion: S.motion,
     // blob: thumbnails die with the page; the names are what ComfyUI needs
     refs: S.refs.map(function (r) { return { name: r.name, url: "" }; }),
@@ -807,7 +826,7 @@ function loadDraft() {
   var d = store("mm.draft");
   if (!d) return;
   $("description").value = d.prompt || "";
-  S.ratio = d.ratio || "16:9";
+  S.output = OUTPUTS[d.output] ? d.output : "720x360";
   S.mp = Number(d.mp || 0.2);
   S.seconds = Number(d.seconds || 6);
   S.refs = d.refs || [];
@@ -820,11 +839,10 @@ function loadDraft() {
     $("shiftVal").textContent = Number(d.shift).toFixed(1); }
   if (d.shift2) { $("shift2-sl").value = d.shift2;
     $("shift2Val").textContent = Number(d.shift2).toFixed(1); }
-  $("segRatio").querySelectorAll("button").forEach(function (b) {
-    b.classList.toggle("on", b.dataset.v === S.ratio); });
+  setOutput(S.output);
   $("segSeconds").querySelectorAll("button").forEach(function (b) {
     b.classList.toggle("on", Number(b.dataset.v) === S.seconds); });
-  [["segUpscale", d.upscale], ["segTiled", d.tiled],
+  [["segUpscale", d.v >= 2 ? d.upscale : "on"], ["segTiled", d.tiled],
    ["segPreview", d.preview]].forEach(function (t) {
     if (!t[1]) return;
     $(t[0]).querySelectorAll("button").forEach(function (b) {
@@ -985,10 +1003,10 @@ function segOn(id) {
 // Everything the settings popover controls — shared by the prompt bar and
 // the board, so a board shot renders with the same recipe as a bar shot.
 function collectBase() {
-  var d = dims();
+  var o = outDims();
   return {
-    fps: 24, megapixels: S.mp, aspect: S.ratio,
-    width: d.w, height: d.h,
+    fps: 24, megapixels: S.mp, output: S.output,
+    width: o.w, height: o.h,
     steps: Number($("steps-sl").value),
     shift: Number($("shift-sl").value),
     shift_2: Number($("shift2-sl").value),
@@ -1171,7 +1189,7 @@ function previewImg(job) {
     encodeURIComponent(job.id) + "/preview?n=" + Number(job.preview) + '">';
 }
 function skeleton(job) {
-  var d = dims();
+  var d = outDims();
   var el = document.createElement("div");
   el.className = "skel" + (job.status === "error" ? " bad" : "");
   var pct = Math.round(job.pct || 0);
@@ -1251,11 +1269,7 @@ function reuse(im) {
   S.voice = im.voice
     ? { name: im.voice, label: im.voice.split(/[\\/]/).pop() }
     : null;
-  if (im.aspect) {
-    S.ratio = im.aspect;
-    $("segRatio").querySelectorAll("button").forEach(function (b) {
-      b.classList.toggle("on", b.dataset.v === S.ratio); });
-  }
+  if (OUTPUTS[im.output]) setOutput(im.output);
   if (im.megapixels) { S.mp = im.megapixels; $("mp-sl").value = S.mp; }
   if (im.seconds || im.length) {
     // the exact rendered length, so frames() gives back the same count
@@ -1414,11 +1428,7 @@ async function continueClip(im) {
       carried++;
     }
   });
-  if (im.aspect) {
-    S.ratio = im.aspect;
-    $("segRatio").querySelectorAll("button").forEach(function (b) {
-      b.classList.toggle("on", b.dataset.v === S.ratio); });
-  }
+  if (OUTPUTS[im.output]) setOutput(im.output);
   if (im.megapixels) { S.mp = im.megapixels; $("mp-sl").value = S.mp; }
   $("description").value = "";
   closeLightbox();
@@ -2343,9 +2353,7 @@ function wire() {
 
   $("segRatio").querySelectorAll("button").forEach(function (b) {
     b.addEventListener("click", function () {
-      S.ratio = b.dataset.v;
-      $("segRatio").querySelectorAll("button").forEach(function (x) {
-        x.classList.toggle("on", x === b); });
+      setOutput(b.dataset.v);
       syncSize();
     });
   });
@@ -2364,7 +2372,7 @@ function wire() {
       b.addEventListener("click", function () {
         $(id).querySelectorAll("button").forEach(function (x) {
           x.classList.toggle("on", x === b); });
-        saveDraft();
+        syncSize();      // the size note says what the upscale pass does
       });
     });
   });

@@ -9,8 +9,14 @@
 3. **Frame length must satisfy `(length - 5) % 17 == 0`.** H3 rejects anything
    else. `frame_length()` mirrors the workflow's ComfyMathExpression exactly:
    `n = max(5, round(sec*24)); n += (5 - n % 17) % 17`.
-4. **Resolution snaps to a multiple of 32**, from megapixels and aspect. Verified
-   against the workflow's own table (0.2 MP 16:9 → 608×352).
+4. **A generated clip is exactly 720×360 or 720×1280** (`comfy.OUTPUTS`;
+   the server 400s anything else). H3 itself renders multiples of 32 —
+   `dimensions()` is still verified against the workflow's table (0.2 MP 16:9
+   → 608×352) — so the base renders at the output's aspect (`base_size()`,
+   capped at the output's pixels), the latent upscale refines at `cover()`
+   (736×384 / 736×1280), and `ImageScale` (lanczos, crop center) lands the
+   decoded frames on the exact size. The page's `dims()` mirrors
+   `base_size()`.
 5. **Both VAEs are required.** The same AV latent is decoded twice — `VAEDecode`
    with the video VAE, `VAEDecodeAudio` with the audio VAE — then muxed by
    `CreateVideo`. Never drop the audio branch; H3's audio is generated, not added.
@@ -34,8 +40,13 @@
 nodes, `ResolutionSelector`, `ComfyMathExpression` and `PrimitiveFloat/String`.
 All are canvas conveniences whose jobs the front end does itself (length and
 size maths, prompt entry, VRAM hygiene between runs), so their packs are
-deliberately not required. KJNodes and the RTX nodes are offered because they
-add something the front end cannot do.
+deliberately not required. KJNodes, the RTX nodes and the H3 latent upscaler
+(`LBH-123-AI/Comfyui_Minimax_h3_latent_Upscaler`, weights into
+`latent_upscale_models`) are offered because they add something the front end
+cannot do. Setup once never installed the upscaler, so every "upscaled" clip
+was the 0.2 MP base stretched — keep the node in `CUSTOM_NODES` and its
+weights in `extra_models()`. With no weights the node lists a
+`(place models in: …)` placeholder; `upscaler_models()` must not count it.
 
 ## Live preview
 
@@ -95,8 +106,10 @@ takes `shift_video`/`shift_audio`, `ModelAttentionBackend` takes `attention`.
 Two inputs are V3 dynamic combos whose settings hang off the chosen option and
 travel in the prompt as `<combo>.<sub>`: the RTX node's
 `resize_type` → `resize_type.scale`, and the H3 latent upscaler's
-`mode` → `mode.megapixels`. `_node()` expands those from the schema (fills
-the chosen option's sub-inputs, drops the others). A stand-in built from
+`mode` → `mode.width`/`mode.height` ("target dimensions", what the app uses;
+names read from the node's own source, d7c01b9 and later) or
+`mode.megapixels` (the workflow's, the fallback). `_node()` expands those
+from the schema (fills the chosen option's sub-inputs, drops the others). A stand-in built from
 guessed names once let the whole H3 upscale pass ship with a sub-input a real
 engine rejects.
 

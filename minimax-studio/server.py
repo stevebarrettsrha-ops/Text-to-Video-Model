@@ -26,7 +26,7 @@ import manager
 from bootstrap import (APP_DIR, ComfyProcess, Progress, comfy_online,
                        comfy_port, detect_comfy_dirs, load_config, normal_url,
                        save_config)
-from comfy import ComfyClient, ComfyError
+from comfy import DEFAULT_OUTPUT, OUTPUTS, ComfyClient, ComfyError
 
 DATA_DIR = bootstrap.DATA_DIR          # honours MINIMAX_STUDIO_DATA
 CLIPS_DIR = DATA_DIR / "clips"
@@ -345,7 +345,7 @@ def run_job(job_id: str, params: dict) -> None:
                 "length": built.get("length") or params.get("length"), "fps": built.get("fps") or params.get("fps"),
                 "seconds": built.get("seconds") or params.get("seconds"),
                 "megapixels": params.get("megapixels"),
-                "aspect": params.get("aspect"),
+                "output": built.get("output") or params.get("output"),
                 "steps": params.get("steps"), "shift": params.get("shift"),
                 "sampler": params.get("sampler"),
                 "scheduler": params.get("scheduler"),
@@ -425,7 +425,8 @@ def api_status():
         "config": {k: cfg.get(k) for k in
                    ("comfy_url", "comfy_dir", "models_dir", "managed",
                     "auto_start_comfy", "torch_index", "precision", "turbo",
-                    "lowvram", "want_kjnodes", "want_rtx", "want_manager")},
+                    "lowvram", "want_kjnodes", "want_rtx", "want_manager",
+                    "want_upscaler")},
         "nodes_ready": False, "ready": False,
     }
     if online:
@@ -476,7 +477,8 @@ def api_setup_start():
     try:
         b = request.get_json(silent=True) or {}
         for key in ("comfy_url", "models_dir", "precision", "turbo",
-                    "lowvram", "want_kjnodes", "want_rtx", "want_manager"):
+                    "lowvram", "want_kjnodes", "want_rtx", "want_manager",
+                    "want_upscaler"):
             if key in b:
                 cfg[key] = b[key]
         cfg["comfy_url"] = normal_url(cfg["comfy_url"])
@@ -697,7 +699,8 @@ def api_config():
     b = request.get_json(silent=True) or {}
     for key in ("comfy_url", "comfy_dir", "models_dir", "auto_start_comfy",
                 "torch_index", "precision", "turbo", "lowvram",
-                "want_kjnodes", "want_rtx", "want_manager"):
+                "want_kjnodes", "want_rtx", "want_manager",
+                "want_upscaler"):
         if key in b:
             cfg[key] = b[key]
     cfg["comfy_url"] = normal_url(cfg["comfy_url"])
@@ -867,6 +870,12 @@ def api_generate():
         return jsonify({"error": "Megapixels must be between 0.05 and 2."}), 400
     if not 1 <= fps <= 120:
         return jsonify({"error": "FPS must be between 1 and 120."}), 400
+    # a clip is 720x360 or 720x1280, nothing else
+    params["output"] = params.get("output") or DEFAULT_OUTPUT
+    if params["output"] not in OUTPUTS:
+        return jsonify({"error": "Output size must be one of "
+                                 + ", ".join(k.replace("x", "×") for k in OUTPUTS)
+                                 + "."}), 400
     if not comfy_online(cfg["comfy_url"]):
         return jsonify({"error": "ComfyUI is not running. Start it from the "
                                  "Engine page."}), 503
@@ -1135,7 +1144,8 @@ def ensure_engine_at_boot() -> None:
         reasons.append("the MiniMax H3 nodes are not loaded")
     for node in bootstrap.CUSTOM_NODES:
         marker = {"rtx": "RTXVideoSuperResolution",
-                  "kjnodes": "ModelPreviewOverrideKJ"}.get(node["id"])
+                  "kjnodes": "ModelPreviewOverrideKJ",
+                  "upscaler": "MinimaxH3LatentUpscaler3D"}.get(node["id"])
         if marker and bootstrap.node_installed(Path(cfg["comfy_dir"]), node) \
                 and not client.has(marker):
             reasons.append(f"{node['label']} is installed but not loaded")

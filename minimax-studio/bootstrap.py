@@ -45,6 +45,12 @@ HF_BASE = "https://huggingface.co"
 MODEL_REPO = "Comfy-Org/MiniMax-H3"
 TURBO_REPO = "lightx2v/Minimax-h3-Turbo"
 UPSCALER_REPO = "LBH-123-AI/Minimax_h3_latent_Upscaler"
+# the 720x1280 / 720x360 sizes come from this pass: without the node and its
+# weights the clip renders at ~0.2 MP and is only stretched to size
+UPSCALER_MODEL = {"name": "minimax_h3_latent_upscaler_3d_bf16.safetensors",
+                  "repo": UPSCALER_REPO, "folder": "latent_upscale_models",
+                  "path": "minimax_h3_latent_upscaler_3d_bf16.safetensors",
+                  "size": 691_000_000}
 
 CUSTOM_NODES = [
     {"id": "kjnodes", "dir": "ComfyUI-KJNodes", "label": "ComfyUI-KJNodes",
@@ -59,6 +65,14 @@ CUSTOM_NODES = [
      "why": "RTX Video Super Resolution — upscales a finished clip on the "
             "NVIDIA SDK rather than on diffusion weights, so it is comfortable "
             "on a small card.",
+     "optional": True},
+    # the workflow's MinimaxH3LatentUpscaler3D (aux_id in the reference)
+    {"id": "upscaler", "dir": "Comfyui_Minimax_h3_latent_Upscaler",
+     "label": "H3 latent upscaler",
+     "repo": "https://github.com/LBH-123-AI/Comfyui_Minimax_h3_latent_Upscaler.git",
+     "fallback": "",
+     "why": "The latent upscale pass — refines each clip at its full "
+            "720×360 or 720×1280 size instead of stretching a small render.",
      "optional": True},
     {"id": "manager", "dir": "ComfyUI-Manager", "label": "ComfyUI-Manager",
      "repo": "https://github.com/Comfy-Org/ComfyUI-Manager.git",
@@ -117,6 +131,7 @@ DEFAULT_CONFIG = {
     "hf_token": "", "hf_endpoint": HF_BASE, "hf_repo": MODEL_REPO,
     "precision": "int8", "turbo": "8step",
     "want_kjnodes": True, "want_rtx": True, "want_manager": True,
+    "want_upscaler": True,
     "lowvram": True, "setup_complete": False,
 }
 
@@ -217,13 +232,18 @@ def missing_models(models_dir: Path, cfg: dict) -> list[dict]:
 
 
 def extra_models(cfg: dict) -> list[dict]:
-    """Optional files: taeh3, the tiny VAE the live preview decodes with.
-    Only wanted with KJNodes, whose preview node is what uses it."""
-    if not cfg.get("want_kjnodes", True):
-        return []
-    return [{**PREVIEW_TAE, "size": PREVIEW_TAE.get("size", 0),
-             "role": "optional",
-             "why": "Live preview while a clip renders (KJNodes)."}]
+    """Optional files: taeh3, the tiny VAE the live preview decodes with
+    (only wanted with KJNodes, whose preview node uses it), and the latent
+    upscaler's weights (only wanted with its node)."""
+    out = []
+    if cfg.get("want_kjnodes", True):
+        out.append({**PREVIEW_TAE, "size": PREVIEW_TAE.get("size", 0),
+                    "role": "optional",
+                    "why": "Live preview while a clip renders (KJNodes)."})
+    if cfg.get("want_upscaler", True):
+        out.append({**UPSCALER_MODEL, "role": "optional",
+                    "why": "The latent upscale pass — full-size clips."})
+    return out
 
 
 def missing_extras(models_dir: Path, cfg: dict) -> list[dict]:
@@ -236,7 +256,8 @@ def node_installed(comfy_dir: Path, node: dict) -> bool:
 
 
 def wanted_nodes(cfg: dict) -> list[dict]:
-    keys = {"kjnodes": "want_kjnodes", "rtx": "want_rtx", "manager": "want_manager"}
+    keys = {"kjnodes": "want_kjnodes", "rtx": "want_rtx",
+            "manager": "want_manager", "upscaler": "want_upscaler"}
     return [n for n in CUSTOM_NODES if cfg.get(keys.get(n["id"], ""), True)]
 
 
@@ -1428,9 +1449,9 @@ def run_setup(cfg: dict, prog: Progress, comfy: ComfyProcess,
                 except Exception as exc:  # noqa: BLE001
                     if item.get("role") != "optional":
                         raise
-                    # the preview decoder is a nicety: never fail setup on it
+                    # optional files are niceties: never fail setup on them
                     prog.log(f"Skipped {item['name']} ({exc}) — clips still "
-                             "render, without the live preview.")
+                             "render without it.")
                     done_bytes += size
                     continue
                 done_bytes += size or (dest.stat().st_size

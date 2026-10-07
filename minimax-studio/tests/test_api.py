@@ -56,6 +56,11 @@ def run(slow: bool = False) -> Suite:
             s.check("bad numeric generation settings are a useful 400",
                     r.status_code == 400 and "numbers" in r.json()["error"])
             r = requests.post(app.url + "/api/generate",
+                              json={"prompt": "x", "output": "1920x1080"},
+                              timeout=10)
+            s.check("only 720x360 and 720x1280 are accepted",
+                    r.status_code == 400 and "720×1280" in r.json()["error"])
+            r = requests.post(app.url + "/api/generate",
                               json={"prompt": "x", "seconds": 31}, timeout=10)
             s.check("generation length is bounded before a job starts",
                     r.status_code == 400 and "30 seconds" in r.json()["error"])
@@ -75,7 +80,7 @@ def run(slow: bool = False) -> Suite:
             r = requests.post(app.url + "/api/generate",
                               json={"prompt": "a man walks to the window",
                                     "seconds": 6, "megapixels": 0.2,
-                                    "aspect": "16:9", "steps": 8, "seed": 11},
+                                    "output": "720x360", "steps": 8, "seed": 11},
                               timeout=30)
             s.check("generate starts a job", r.ok and len(r.json()["jobs"]) == 1)
             jobs = finish_jobs(app.url)
@@ -86,8 +91,9 @@ def run(slow: bool = False) -> Suite:
             s.equal("one clip in the gallery", len(clips), 1)
             clip = clips[0]
             s.check("the gallery entry keeps the whole recipe",
-                    clip["seed"] == 11 and clip["width"] == 608
-                    and clip["height"] == 352 and clip["length"] == 158
+                    clip["seed"] == 11 and clip["width"] == 720
+                    and clip["height"] == 360 and clip["length"] == 158
+                    and clip["output"] == "720x360"
                     and clip["steps"] == 8 and clip["kind"] == "clip")
             s.check("seconds are the delivered ones, not the asked ones",
                     abs(clip["seconds"] - 158 / 24) < 0.01)
@@ -106,7 +112,7 @@ def run(slow: bool = False) -> Suite:
             up = [c for c in clips if c["kind"] == "rtx"][0]
             s.check("the gallery shows source size times the multiplier, "
                     "not None x None",
-                    up["width"] == 1216 and up["height"] == 704)
+                    up["width"] == 1440 and up["height"] == 720)
             s.check("the RTX job carries no seed", up["seed"] is None)
             s.check("audio length and fps ride along",
                     up["fps"] == clip["fps"] and up["seconds"] == clip["seconds"])

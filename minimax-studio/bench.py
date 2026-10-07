@@ -34,7 +34,8 @@ from pathlib import Path
 import requests
 
 import bootstrap
-from comfy import ComfyClient, ComfyError, dimensions, frame_length
+from comfy import (OUTPUTS, ComfyClient, ComfyError, base_size, cover,
+                   frame_length, output_size)
 
 GIB = 1024 ** 3
 
@@ -238,10 +239,9 @@ def main(argv: list[str] | None = None) -> int:
                     help="base megapixels to try, comma-separated")
     ap.add_argument("--upscale", default="off,on",
                     help="H3 latent upscale pass: off, on, or off,on")
-    ap.add_argument("--upscale-mp", type=float, default=0.6,
-                    help="target of the H3 upscale (the workflow's 0.6)")
     ap.add_argument("--seconds", type=float, default=6)
-    ap.add_argument("--aspect", default="16:9")
+    ap.add_argument("--output", default="720x360", choices=sorted(OUTPUTS),
+                    help="finished clip size; the H3 upscale refines at it")
     ap.add_argument("--steps", type=int, default=8)
     ap.add_argument("--rtx", action="store_true",
                     help="also time RTX Video Super Resolution x2 on each clip")
@@ -292,26 +292,25 @@ def main(argv: list[str] | None = None) -> int:
     length = frame_length(a.seconds)
     plan = [(mp, up, n) for mp in bases for up in ups for n in range(a.runs)]
     print(f"{len(plan)} render(s) of {length} frames ({a.seconds:g} s) at "
-          f"{a.aspect}, {a.steps} steps, seed {a.seed} -> {out}\n")
+          f"{a.output}, {a.steps} steps, seed {a.seed} -> {out}\n")
 
     rows = []
     for index, (mp, up, n) in enumerate(plan, 1):
-        w, h = dimensions(mp, a.aspect)
-        uw, uh = dimensions(a.upscale_mp, a.aspect) if up else (w, h)
-        label = f"{mp:g} MP {w}×{h}" + (f" -> H3 {a.upscale_mp:g} MP" if up else "")
+        w, h = base_size(mp, *output_size(a.output))
+        uw, uh = cover(*output_size(a.output)) if up else (w, h)
+        label = f"{mp:g} MP {w}×{h}" + (f" -> H3 {uw}×{uh}" if up else "")
         print(f"[{index}/{len(plan)}] {label}" + (f" (run {n + 1})" if a.runs > 1 else ""),
               flush=True)
         params = {"prompt": a.prompt, "refs": refs, "seconds": a.seconds,
-                  "megapixels": mp, "aspect": a.aspect, "steps": a.steps,
-                  "seed": a.seed, "upscale": up, "upscale_mp": a.upscale_mp,
+                  "megapixels": mp, "output": a.output, "steps": a.steps,
+                  "seed": a.seed, "upscale": up,
                   "tiled_decode": True}
         row = {"base_mp": mp, "base_size": f"{w}x{h}", "h3_upscale": up,
-               "out_size": f"{uw}x{uh}", "frames": length, "run": n + 1}
+               "out_size": a.output, "frames": length, "run": n + 1}
         try:
             built = client.build(params)
             if up and not built.get("upscaled"):
                 row["note"] = built.get("note", "")
-                row["out_size"] = f"{w}x{h}"
             with Monitor(url) as mon:
                 res = run_one(client, built["prompt"], a.timeout)
                 mon.sample()
@@ -384,7 +383,7 @@ def write_reports(out: Path, rows: list[dict], a, stats: dict, lowvram) -> None:
         + f" · engine low-VRAM mode: "
         + {True: "on", False: "**off**", None: "unknown"}[lowvram],
         f"- {rows[0]['frames'] if rows else '?'} frames ({a.seconds:g} s) at "
-        f"{a.aspect}, {a.steps} steps, seed {a.seed}, tiled decode",
+        f"{a.output}, {a.steps} steps, seed {a.seed}, tiled decode",
         f"- prompt: {a.prompt[:160]}",
         "",
         "| base | H3 upscale | output | total | wait | sampling | s/step | "
@@ -394,12 +393,12 @@ def write_reports(out: Path, rows: list[dict], a, stats: dict, lowvram) -> None:
     for r in rows:
         if r.get("error"):
             lines.append(f"| {r['base_mp']:g} MP {r['base_size']} | "
-                         f"{'0.6 MP' if r['h3_upscale'] else 'off'} | "
+                         f"{'on' if r['h3_upscale'] else 'off'} | "
                          f"failed: {r['error'][:80]} |" + " |" * 11)
             continue
         lines.append(
             f"| {r['base_mp']:g} MP {r['base_size']} "
-            f"| {f'{a.upscale_mp:g} MP' if r['h3_upscale'] else 'off'} "
+            f"| {'on' if r['h3_upscale'] else 'off'} "
             f"| {r['out_size']} | {fmt_s(r.get('total'))} | {fmt_s(r.get('wait'))} "
             f"| {fmt_s(r.get('t_sample'))} | {fmt_s(r.get('s_per_step'))} "
             f"| {fmt_s(r.get('t_upscale')) if r['h3_upscale'] else '—'} "

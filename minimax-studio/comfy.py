@@ -20,6 +20,12 @@ workflow used helper packs for them:
   length  = max(5, round(seconds * fps)), rounded up so (length - 5) % 17 == 0
   width/height from megapixels and aspect, snapped to a multiple of 32
 
+Every clip comes out at one of two fixed sizes, OUTPUTS: 720x360 or 720x1280.
+H3 only renders multiples of 32, so the base pass renders at the output's
+aspect, the latent upscale pass (when it can run) refines at the smallest
+multiple-of-32 frame covering the output, and an ImageScale after the decode
+lands the frames on the exact output size.
+
 The upscale pass (separate A/V latents, MinimaxH3LatentUpscaler3D, a second
 short KSampler at denoise 0.5) is added only when those nodes and the upscaler
 model are actually present.
@@ -44,8 +50,36 @@ RTX_UPSCALE = "RTXVideoSuperResolution"
 PREVIEW = "ModelPreviewOverrideKJ"
 
 
+# The only sizes a finished clip may have: landscape and portrait.
+OUTPUTS = {"720x360": (720, 360), "720x1280": (720, 1280)}
+DEFAULT_OUTPUT = "720x360"
+
+
 class ComfyError(RuntimeError):
     pass
+
+
+def output_size(key) -> tuple[int, int]:
+    """The exact pixel size of a finished clip; unknown keys get the default."""
+    return OUTPUTS.get(str(key or ""), OUTPUTS[DEFAULT_OUTPUT])
+
+
+def base_size(megapixels: float, width: int, height: int,
+              multiple: int = 32) -> tuple[int, int]:
+    """The base render for an output size: megapixels at the output's aspect,
+    never more pixels than the output has. At or past that cap it is the
+    largest multiple-of-32 frame inside the output — worked out in integers,
+    so a float landing on x.5 cannot round the base past the output."""
+    if megapixels * 1024 * 1024 >= width * height:
+        return (max(multiple, width // multiple * multiple),
+                max(multiple, height // multiple * multiple))
+    return dimensions(megapixels, f"{width}:{height}", multiple)
+
+
+def cover(width: int, height: int, multiple: int = 32) -> tuple[int, int]:
+    """The smallest multiple-of-32 frame at least as large as width x height:
+    the size H3 refines at before the frames are cut to the output."""
+    return (-(-width // multiple) * multiple, -(-height // multiple) * multiple)
 
 
 def frame_length(seconds: float, fps: int = 24) -> int:
@@ -167,8 +201,11 @@ class ComfyClient:
         return self._enum(ATTENTION, "backend") or self._enum(ATTENTION, "attention")
 
     def upscaler_models(self) -> list[str]:
+        # with no weights the node lists a placeholder, "(place models in:
+        # ...)", that it then refuses at run time — that is not a model
         for name in ("model_name", "upscaler", "ckpt_name", "model"):
-            vals = self._enum(UPSCALER, name)
+            vals = [v for v in self._enum(UPSCALER, name)
+                    if str(v).lower().endswith((".safetensors", ".pth"))]
             if vals:
                 return vals
         return []
@@ -345,8 +382,11 @@ class ComfyClient:
 
     def build(self, p: dict) -> dict:
         """p: prompt, refs[] (filenames already in ComfyUI/input), seconds,
-        fps, megapixels, aspect, steps, cfg, sampler, scheduler, shift,
-        shift_2, seed, attention, upscale, upscale_mp, tiled_decode."""
+        fps, output, megapixels, steps, cfg, sampler, scheduler, shift,
+        shift_2, seed, attention, upscale, tiled_decode.
+
+        output picks the finished size (OUTPUTS); megapixels sizes only the
+        base pass, capped at the output's own pixel count."""
         self.ensure_supported()
         files = self.resolve_models(p)
         seed = int(p.get("seed") if p.get("seed") not in (None, "") else
@@ -354,8 +394,9 @@ class ComfyClient:
         fps = int(p.get("fps") or 24)
         seconds = float(p.get("seconds") or 6)
         length = frame_length(seconds, fps)
-        width, height = dimensions(float(p.get("megapixels") or 0.2),
-                                   p.get("aspect") or "16:9")
+        out_w, out_h = output_size(p.get("output"))
+        width, height = base_size(float(p.get("megapixels") or 0.2),
+                                  out_w, out_h)
         g: dict = {}
 
         g["1"] = self._node("UNETLoader", {
@@ -496,8 +537,13 @@ class ComfyClient:
 
         latent_ref: list = ["22", 0]
         note = ""
+        render = (width, height)
         if p.get("upscale"):
-            latent_ref, note = self._add_upscale(g, latent_ref, model_ref, p, seed)
+            target = cover(out_w, out_h)
+            latent_ref, note = self._add_upscale(g, latent_ref, model_ref, p,
+                                                 seed, target)
+            if not note:
+                render = target
 
         decode_class = "VAEDecodeTiled" if (p.get("tiled_decode")
                                             and self.has("VAEDecodeTiled")) \
@@ -511,12 +557,34 @@ class ComfyClient:
                                      "value": int(p.get("tile_size") or 512)}
             decode_wanted["overlap"] = {"names": ["overlap"], "value": 64}
         g["30"] = self._node(decode_class, decode_wanted)
+        frames_ref: list = ["30", 0]
+        # H3 renders multiples of 32; the clip must be exactly the output
+        # size, so the decoded frames are centre-cropped to its aspect and
+        # resized. From the refined frame that is a small trim, not a stretch.
+        size = render
+        if render != (out_w, out_h):
+            if not self.has("ImageScale"):
+                raise ComfyError("This ComfyUI has no ImageScale node, so the "
+                                 f"clip cannot be sized to {out_w}x{out_h}. "
+                                 "Update ComfyUI from the Engine page.")
+            methods = self._enum("ImageScale", "upscale_method")
+            g["34"] = self._node("ImageScale", {
+                "image": {"names": ["image"], "value": frames_ref,
+                          "required": True},
+                "method": {"names": ["upscale_method"],
+                           "value": "lanczos" if "lanczos" in methods
+                           else (methods[0] if methods else "bilinear")},
+                "width": {"names": ["width"], "value": out_w},
+                "height": {"names": ["height"], "value": out_h},
+                "crop": {"names": ["crop"], "value": "center"}})
+            frames_ref = ["34", 0]
+            size = (out_w, out_h)
         g["31"] = self._node("VAEDecodeAudio", {
             "samples": {"names": ["samples"], "value": latent_ref,
                         "required": True},
             "vae": {"names": ["vae"], "value": ["4", 0], "required": True}})
         g["32"] = self._node("CreateVideo", {
-            "images": {"names": ["images"], "value": ["30", 0], "required": True},
+            "images": {"names": ["images"], "value": frames_ref, "required": True},
             "audio": {"names": ["audio"], "value": ["31", 0]},
             "fps": {"names": ["fps"], "value": fps}})
         g["33"] = self._node("SaveVideo", {
@@ -524,21 +592,28 @@ class ComfyClient:
             "prefix": {"names": ["filename_prefix"], "value": "video/MiniMaxH3"}})
 
         return {"prompt": g, "seed": seed, "files": files, "length": length,
-                "width": width, "height": height, "fps": fps,
+                "width": size[0], "height": size[1], "fps": fps,
+                "base": [width, height], "render": list(render),
+                "output": f"{out_w}x{out_h}",
                 "seconds": round(length / fps, 2), "note": note,
                 "upscaled": bool(note == "")and bool(p.get("upscale")),
                 "preview": bool(tae)}
 
     def _add_upscale(self, g: dict, latent_ref: list, model_ref: list,
-                     p: dict, seed: int):
-        """The workflow's upscale branch, added only if it can actually run."""
+                     p: dict, seed: int, target: tuple[int, int]):
+        """The workflow's upscale branch, added only if it can actually run.
+        target is the refine size: the output, rounded up to 32."""
         if not self.has(UPSCALER):
             return latent_ref, ("The latent upscaler node is not installed, so "
-                                "the clip was rendered at base size.")
+                                "the clip was rendered at base size and "
+                                "stretched. Run setup again from the Engine "
+                                "page to install it, then restart ComfyUI.")
         models = self.upscaler_models()
         if not models:
-            return latent_ref, ("No upscaler model in ComfyUI, so the clip was "
-                                "rendered at base size.")
+            return latent_ref, ("No latent upscaler model in "
+                                "models/latent_upscale_models, so the clip was "
+                                "rendered at base size and stretched. Run "
+                                "setup again from the Engine page.")
         sep = "LTXVSeparateAVLatent"
         cat = "LTXVConcatAVLatent"
         if not (self.has(sep) and self.has(cat)):
@@ -552,17 +627,26 @@ class ComfyClient:
                       "value": models[0], "required": True},
             "latent": {"names": ["latent", "samples"], "value": ["40", 0],
                        "required": True},
-            "mode": {"names": ["mode", "resize_type"], "value": "megapixels"},
-            # a dynamic combo: the target size lives at mode.megapixels
-            "megapixels": {"names": ["mode.megapixels",
-                                     "resize_type.megapixels", "megapixels",
-                                     "value"],
-                           "value": float(p.get("upscale_mp") or 0.6)},
+        }
+        # a dynamic combo: the target size hangs off the chosen mode. Exact
+        # dimensions where the node offers them, else the same pixel count.
+        if "target dimensions" in self._enum(UPSCALER, "mode"):
+            wanted["mode"] = {"names": ["mode"], "value": "target dimensions"}
+            wanted["width"] = {"names": ["mode.width"], "value": target[0]}
+            wanted["height"] = {"names": ["mode.height"], "value": target[1]}
+        else:
+            wanted["mode"] = {"names": ["mode", "resize_type"],
+                              "value": "megapixels"}
+            wanted["megapixels"] = {
+                "names": ["mode.megapixels", "resize_type.megapixels",
+                          "megapixels", "value"],
+                "value": round(target[0] * target[1] / (1024 * 1024), 2)}
+        wanted.update({
             "align": {"names": ["align", "multiple_of"], "value": 32},
             # chunked over time: the whole clip's latent never sits in VRAM
             "chunking": {"names": ["enable_temporal_chunking", "use_tiling"],
                          "value": True},
-        }
+        })
         # the workflow's low-VRAM choices, set only where this node offers them
         for key, value in (("force_unload", "cuda"), ("device", "cuda"),
                            ("precision", "fp16")):

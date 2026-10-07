@@ -57,6 +57,13 @@ Custom nodes, all optional:
   each sampling step as the tiny `taeh3` decoder sees it (Settings → Live
   preview turns it off; `taeh3` is fetched with the weights, and skipped
   without complaint if it cannot be)
+- **H3 latent upscaler** (`LBH-123-AI/Comfyui_Minimax_h3_latent_Upscaler`) —
+  `MinimaxH3LatentUpscaler3D`, the latent upscale pass that gives a clip real
+  detail at its full 720×360 or 720×1280. Its weights
+  (`minimax_h3_latent_upscaler_3d_bf16.safetensors`, ~0.7 GB) are fetched into
+  `models/latent_upscale_models` with the rest. An install that predates this
+  can add both from the Engine page: install the node, download the missing
+  files, restart ComfyUI.
 - **NVIDIA RTX nodes** — `RTXVideoSuperResolution` for the upscale action
 - **ComfyUI-Manager**
 
@@ -82,7 +89,8 @@ and appearance consistency, one **motion video** whose frames guide movement
 and composition, and a **reference voice** whose speaker H3 follows while
 generating the clip's audio. These can be combined—for example, a character
 image plus a choreography clip plus a voice—or used individually. Press an
-active Motion or Voice pill again to remove it. Settings holds aspect, length,
+active Motion or Voice pill again to remove it. The prompt bar picks the
+output size — **720×360** or **720×1280** — and Settings holds length,
 quality, sampling, and upscale controls.
 
 The motion-video path is a true temporal reference, not a thumbnail: the app
@@ -96,17 +104,24 @@ it:
 - **Length** — `max(5, round(seconds × 24))`, rounded up so that
   `(frames − 5)` divides by 17, which is what H3 requires. Ask for 6 s and you
   get 158 frames, 6.58 s.
-- **Size** — from megapixels and aspect, snapped to a multiple of 32. The
-  defaults match the workflow's own table: 0.2 MP 16:9 → 608×352, 0.3 → 736×416,
-  0.4 → 864×480, 0.5 → 960×544. Start at 0.2.
+- **Size** — every clip comes out at exactly **720×360** or **720×1280**.
+  H3 only renders multiples of 32, so the base pass renders at the output's
+  aspect from the base-size megapixels (0.2 MP → 640×320 or 352×608, never
+  more pixels than the output), the latent upscale pass refines at the
+  multiple-of-32 frame covering the output (736×384 or 736×1280), and an
+  `ImageScale` after the decode centre-crops and resizes the frames to the
+  exact size.
 
 In Settings: steps (8, matching the turbo LoRA), shift and shift 2 (6 and 3),
 sampler and scheduler, attention backend, seed, tiled decode (on — it keeps the
-VAE step off the VRAM cliff), and the optional **latent upscale pass**, which
-adds the workflow's `MinimaxH3LatentUpscaler3D` branch and a second 4-step
-sampler at denoise 0.5. If those nodes or the upscaler model are absent, the
-clip still renders at base size and the app says so on the clip rather than
-failing.
+VAE step off the VRAM cliff), and the **latent upscale pass** (on by
+default), which adds the workflow's `MinimaxH3LatentUpscaler3D` branch and a
+second 4-step sampler at denoise 0.5 at the full output size. Turned off, the
+small base render is only stretched to size — that is what a soft, low-detail
+clip means. If those nodes or the upscaler model are absent, the clip still
+renders, stretched from base size, and the app says so on the clip rather
+than failing. A 720×1280 refine is about 0.9 MP: heavier than the 0.2 MP base
+on an 8 GB card.
 
 Audio comes out with the video — H3 generates both, decoded by their own VAEs
 and muxed by `CreateVideo`.
@@ -152,7 +167,8 @@ Open any clip and press **RTX upscale ×2**. The clip goes back to ComfyUI
 through `LoadVideo` → `GetVideoComponents` → `RTXVideoSuperResolution` →
 `CreateVideo` → `SaveVideo`, exactly as in `rtx_video_upscale.json`: audio and
 frame rate are carried straight through from the source, quality ULTRA. A
-608×352 clip comes back 1216×704.
+720×360 clip comes back 1440×720 — the one way to get a clip larger than the
+two output sizes, and only when you ask for it.
 
 This is the part of the app that will run properly on your hardware today.
 

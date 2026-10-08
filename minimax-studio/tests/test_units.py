@@ -417,4 +417,33 @@ def run(slow: bool = False) -> Suite:
                       "loras")])
     s.check("a browsed repo does not redirect the set",
             all(x[0] != "someone/else" for x in seen))
+
+    # -- a moved app folder: stale saved paths are found again ---------------
+    import tempfile
+    real_app = bootstrap.APP_DIR
+    with tempfile.TemporaryDirectory() as tmp:
+        app = Path(tmp) / "Text-to-Video-Model-main" / real_app.name
+        (app / "ComfyUI" / "models").mkdir(parents=True)
+        (app / "ComfyUI" / "main.py").write_text("")
+        bootstrap.APP_DIR = app
+        try:
+            old = "C:\\AI\\Text-to-Video-Model\\" + real_app.name + "\\ComfyUI"
+            moved = dict(bootstrap.DEFAULT_CONFIG, comfy_dir=old,
+                         models_dir=old + "\\models", python="C:\\gone\\python.exe")
+            notes = bootstrap.heal_paths(moved)
+            s.equal("a stale ComfyUI path is rebased onto the moved app",
+                    moved["comfy_dir"], str(app / "ComfyUI"))
+            s.equal("a stale models path follows it",
+                    moved["models_dir"], str(app / "ComfyUI" / "models"))
+            s.equal("a vanished Python path is cleared, not kept",
+                    moved["python"], "")
+            s.check("each repair is reported", len(notes) == 3)
+            blank = dict(bootstrap.DEFAULT_CONFIG)
+            bootstrap.heal_paths(blank)
+            s.equal("an empty config adopts the ComfyUI inside the app",
+                    blank["comfy_dir"], str(app / "ComfyUI"))
+            s.check("a valid config is left alone",
+                    bootstrap.heal_paths(blank) == [])
+        finally:
+            bootstrap.APP_DIR = real_app
     return s

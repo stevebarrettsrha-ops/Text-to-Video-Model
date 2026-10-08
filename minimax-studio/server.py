@@ -42,6 +42,19 @@ app.json.sort_keys = False
 
 cfg = load_config()
 progress = Progress()
+
+
+def _heal() -> None:
+    # saved absolute paths go stale when the app folder moves; find them again
+    notes = bootstrap.heal_paths(cfg)
+    if notes:
+        save_config(cfg)
+        for n in notes:
+            progress.log(f"[MiniMax Studio] {n}")
+            print(f"[MiniMax Studio] {n}", flush=True)
+
+
+_heal()
 comfy_proc = ComfyProcess()
 client = ComfyClient(cfg["comfy_url"])
 
@@ -714,6 +727,7 @@ def api_config():
 # --------------------------------------------------------------------------- #
 @app.get("/api/deps")
 def api_deps():
+    _heal()
     live = client if comfy_online(cfg["comfy_url"]) else None
     return jsonify({"items": manager.dependencies(cfg, live,
                                                   starting=comfy_proc.alive()),

@@ -651,7 +651,12 @@ def have_git() -> bool:
 
 def detect_comfy_dirs() -> list[str]:
     home = Path.home()
-    cands = [APP_DIR / "ComfyUI", home / "ComfyUI",
+    # beside the app first: setup puts ComfyUI in here, and a portable build
+    # unpacked next to the repo is the other common layout
+    near = [APP_DIR, APP_DIR.parent, APP_DIR.parent.parent]
+    cands = [b / "ComfyUI" for b in near] + \
+            [b / "ComfyUI_windows_portable" / "ComfyUI" for b in near] + \
+            [home / "ComfyUI",
              home / "Documents" / "ComfyUI", home / "Desktop" / "ComfyUI",
              Path("C:/ComfyUI"), Path("C:/ComfyUI_windows_portable/ComfyUI"),
              Path("D:/ComfyUI"), Path("D:/ComfyUI_windows_portable/ComfyUI")]
@@ -671,6 +676,57 @@ def detect_comfy_dirs() -> list[str]:
         except OSError:
             continue
     return out
+
+
+def rebase_path(old: str) -> Path | None:
+    """Where a path saved under an earlier location of this app lives now.
+
+    The config keeps absolute paths. Move, rename or re-extract the folder
+    (Text-to-Video-Model -> Text-to-Video-Model-main, C: -> D:) and every one
+    of them points nowhere, though ComfyUI and the weights moved with it.
+    The tail after this app's own folder name is the same; graft it on here.
+    """
+    parts = [p for p in re.split(r"[\\/]+", old or "") if p]
+    for i in range(len(parts) - 1, -1, -1):
+        if parts[i].lower() == APP_DIR.name.lower():
+            cand = APP_DIR.joinpath(*parts[i + 1:])
+            try:
+                if cand.exists():
+                    return cand
+            except OSError:
+                return None
+    return None
+
+
+def heal_paths(cfg: dict) -> list[str]:
+    """Repair saved paths that no longer exist. Returns what changed."""
+    notes: list[str] = []
+    old_comfy = cfg.get("comfy_dir") or ""
+    comfy = Path(old_comfy) if old_comfy else None
+    if not (comfy and (comfy / "main.py").exists()):
+        cands = [rebase_path(old_comfy)] + [Path(d) for d in detect_comfy_dirs()]
+        for c in cands:
+            if c and (c / "main.py").exists():
+                cfg["comfy_dir"] = str(c)
+                comfy = c
+                notes.append(f"ComfyUI found at {c}")
+                break
+    old_models = cfg.get("models_dir") or ""
+    if not (old_models and Path(old_models).is_dir()):
+        moved = rebase_path(old_models)
+        if moved and moved.is_dir():
+            cfg["models_dir"] = str(moved)
+        elif comfy and (comfy / "models").is_dir():
+            cfg["models_dir"] = str(comfy / "models")
+        if cfg.get("models_dir") != old_models:
+            notes.append(f"Models folder found at {cfg['models_dir']}")
+    py = cfg.get("python") or ""
+    if py and not Path(py).exists():
+        moved = rebase_path(py)
+        cfg["python"] = str(moved) if moved else ""
+        notes.append(f"Python path {py} is gone"
+                     + (f"; using {moved}" if moved else "; cleared"))
+    return notes
 
 
 # --------------------------------------------------------------------------- #

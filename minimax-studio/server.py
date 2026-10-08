@@ -44,14 +44,48 @@ cfg = load_config()
 progress = Progress()
 
 
-def _heal() -> None:
-    # saved absolute paths go stale when the app folder moves; find them again
-    notes = bootstrap.heal_paths(cfg)
-    if notes:
-        save_config(cfg)
-        for n in notes:
-            progress.log(f"[MiniMax Studio] {n}")
-            print(f"[MiniMax Studio] {n}", flush=True)
+# set while the start-up search walks the drives, so the Engine page says
+# "searching" instead of "missing" and Recheck does not start a second walk
+locating = threading.Event()
+_locate_lock = threading.Lock()
+
+
+def _say(msg: str) -> None:
+    progress.log(f"[MiniMax Studio] {msg}")
+    print(f"[MiniMax Studio] {msg}", flush=True)
+
+
+def _heal(search: bool = False) -> None:
+    """Verify the saved locations; repair any that moved.
+
+    Without `search` only the quick repair runs (a moved app folder). With it,
+    a ComfyUI that is still nowhere is searched for across the drives.
+    MINIMAX_STUDIO_NO_SEARCH=1 turns all of it off: the tests' configs point
+    at made-up folders on purpose, and must not adopt a real install.
+    """
+    if os.environ.get("MINIMAX_STUDIO_NO_SEARCH") == "1":
+        return
+    if not _locate_lock.acquire(blocking=False):
+        return                      # a search is already running
+    try:
+        if search:
+            locating.set()
+        notes = bootstrap.verify_locations(cfg, search=search, log=_say)
+        if notes:
+            save_config(cfg)
+            for n in notes:
+                _say(n)
+        if search:
+            for line in bootstrap.location_report(cfg):
+                _say("Verified " + line)
+    finally:
+        locating.clear()
+        _locate_lock.release()
+
+
+def _needs_search() -> bool:
+    d = cfg.get("comfy_dir")
+    return not (d and (Path(d) / "main.py").exists())
 
 
 _heal()
@@ -727,10 +761,18 @@ def api_config():
 # --------------------------------------------------------------------------- #
 @app.get("/api/deps")
 def api_deps():
-    _heal()
+    if not locating.is_set():
+        _heal()
+        if _needs_search():
+            # Recheck with ComfyUI still nowhere: search the drives, in the
+            # background — the page polls and the row says "searching"
+            locating.set()
+            threading.Thread(target=_heal, args=(True,), daemon=True).start()
     live = client if comfy_online(cfg["comfy_url"]) else None
     return jsonify({"items": manager.dependencies(cfg, live,
-                                                  starting=comfy_proc.alive()),
+                                                  starting=comfy_proc.alive(),
+                                                  searching=locating.is_set()),
+                    "searching": locating.is_set(),
                     "torch_index": cfg.get("torch_index", "")})
 
 
@@ -1192,6 +1234,11 @@ def ensure_engine_at_boot() -> None:
     _refresh_schema_when_up()
 
 
+def boot() -> None:
+    _heal(search=True)
+    ensure_engine_at_boot()
+
+
 # --------------------------------------------------------------------------- #
 def main() -> None:
     # a redirected console on Windows is cp1252: no log line may crash it
@@ -1203,8 +1250,9 @@ def main() -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     CLIPS_DIR.mkdir(parents=True, exist_ok=True)
     threading.Thread(target=ws_listener, daemon=True).start()
-    # the engine comes up on its own; the page can open meanwhile
-    threading.Thread(target=ensure_engine_at_boot, daemon=True).start()
+    # verify every saved location (searching the drives if ComfyUI is lost),
+    # then bring the engine up on its own; the page can open meanwhile
+    threading.Thread(target=boot, daemon=True).start()
     url = f"http://127.0.0.1:{PORT}"
     print(f"\n  MiniMax Studio  ->  {url}\n")
     if os.environ.get("MINIMAX_STUDIO_NO_BROWSER") != "1":

@@ -446,4 +446,50 @@ def run(slow: bool = False) -> Suite:
                     bootstrap.heal_paths(blank) == [])
         finally:
             bootstrap.APP_DIR = real_app
+
+    # -- the start-up search: finds ComfyUI anywhere, prefers the weights ----
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        def make(rel: str) -> Path:
+            c = root / rel
+            (c / "models").mkdir(parents=True)
+            (c / "main.py").write_text("")
+            (c / "folder_paths.py").write_text("")
+            return c
+        bare = make("a/ComfyUI")
+        rich = make("x/y/z/w/ComfyUI")
+        make("a/ComfyUI/custom_nodes/inner/ComfyUI")   # never walked into
+        (root / "Windows" / "ComfyUI").mkdir(parents=True)
+        (root / "Windows" / "ComfyUI" / "main.py").write_text("")
+        found = bootstrap.find_comfy_installs([root], max_depth=6, budget=10)
+        s.equal("the search finds every ComfyUI, shallowest first",
+                found, [bare, rich])
+        s.equal("the search stops at the depth limit",
+                bootstrap.find_comfy_installs([root], max_depth=3, budget=10),
+                [bare])
+        wcfg = dict(bootstrap.DEFAULT_CONFIG)
+        for m in bootstrap.model_set(wcfg):
+            p = bootstrap.model_path(rich / "models", m)
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_bytes(b"")
+        s.equal("the install holding the H3 weights is the one chosen",
+                bootstrap.pick_comfy(found, wcfg), rich)
+        real_find = bootstrap.find_comfy_installs
+        bootstrap.find_comfy_installs = lambda: [bare, rich]
+        try:
+            lost = dict(bootstrap.DEFAULT_CONFIG, comfy_dir=str(root / "gone"))
+            bootstrap.verify_locations(lost)
+            s.equal("a lost ComfyUI is found by the search",
+                    lost["comfy_dir"], str(rich))
+            s.equal("and its models folder with it",
+                    lost["models_dir"], str(rich / "models"))
+            s.check("the report says both check out",
+                    all("not found" not in l
+                        for l in bootstrap.location_report(lost)))
+            quiet = dict(bootstrap.DEFAULT_CONFIG, comfy_dir=str(root / "gone"))
+            bootstrap.verify_locations(quiet, search=False)
+            s.equal("no search when asked not to",
+                    quiet["comfy_dir"], str(root / "gone"))
+        finally:
+            bootstrap.find_comfy_installs = real_find
     return s

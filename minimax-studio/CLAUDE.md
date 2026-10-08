@@ -141,6 +141,19 @@ too. `units` pins the frame rule and the resolution table to the workflow's
 own numbers, and checks the page's `frames()` against Python's
 `frame_length()` (JS `%` keeps the sign; that pair has drifted once).
 
+## Saved locations are verified, never trusted
+
+The config keeps absolute paths, which go stale the moment the app folder is
+moved, renamed or re-extracted — and then everything reads "missing" though
+it is all on disk. `bootstrap.verify_locations()` runs at every start (in the
+boot thread, before the engine is launched) and on every Recheck
+(`/api/deps`): `heal_paths()` rebases a stale path onto the app's current
+folder, and if ComfyUI is still nowhere, `find_comfy_installs()` walks the
+drives breadth-first under a time budget, and `pick_comfy()` prefers the
+install holding the H3 weights. While it walks, `/api/deps` reports
+`searching` and the page re-polls. `MINIMAX_STUDIO_NO_SEARCH=1` (set by the
+test harness) turns it off: test configs name made-up folders on purpose.
+
 ## Which engine is answering
 
 `bootstrap.engine_foreign()` is the only judge of "a different ComfyUI is on

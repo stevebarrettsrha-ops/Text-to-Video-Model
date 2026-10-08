@@ -223,6 +223,7 @@ def studio(comfy_url: str, data: Path, models_dir: Path | None = None,
     return Server([sys.executable, "server.py"], port, "/api/status",
                   env={"MINIMAX_STUDIO_PORT": str(port),
                        "MINIMAX_STUDIO_NO_BROWSER": "1",
+                       "MINIMAX_STUDIO_NO_SEARCH": "1",
                        "MINIMAX_STUDIO_DATA": str(data)})
 
 

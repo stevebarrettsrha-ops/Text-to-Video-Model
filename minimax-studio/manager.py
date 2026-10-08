@@ -174,7 +174,7 @@ def forget_torch() -> None:
 # dependency report
 # --------------------------------------------------------------------------- #
 def dependencies(cfg: dict, client=None,
-                 starting: bool = False) -> list[dict]:
+                 starting: bool = False, searching: bool = False) -> list[dict]:
     items: list[dict] = []
 
     try:
@@ -195,9 +195,15 @@ def dependencies(cfg: dict, client=None,
     if comfy_dir and (comfy_dir / "main.py").exists():
         items.append({"id": "comfyui", "label": "ComfyUI", "state": "ok",
                       "detail": str(comfy_dir), "action": "update"})
+    elif searching:
+        items.append({"id": "comfyui", "label": "ComfyUI", "state": "warn",
+                      "detail": "Searching this computer for it — this "
+                                "list updates when the search is done.",
+                      "action": None})
     else:
         items.append({"id": "comfyui", "label": "ComfyUI", "state": "missing",
-                      "detail": "Not installed yet.", "action": "install"})
+                      "detail": "Not found on this computer.",
+                      "action": "install"})
 
     for node in CUSTOM_NODES:
         installed = bool(comfy_dir and bootstrap.node_installed(comfy_dir, node))

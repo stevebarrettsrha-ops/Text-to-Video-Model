@@ -475,7 +475,10 @@ def run(slow: bool = False) -> Suite:
         s.equal("the install holding the H3 weights is the one chosen",
                 bootstrap.pick_comfy(found, wcfg), rich)
         real_find = bootstrap.find_comfy_installs
+        real_detect = bootstrap.detect_comfy_dirs
         bootstrap.find_comfy_installs = lambda: [bare, rich]
+        # a real ~/ComfyUI on this machine must not answer for the search
+        bootstrap.detect_comfy_dirs = lambda: []
         try:
             lost = dict(bootstrap.DEFAULT_CONFIG, comfy_dir=str(root / "gone"))
             bootstrap.verify_locations(lost)
@@ -492,4 +495,5 @@ def run(slow: bool = False) -> Suite:
                     quiet["comfy_dir"], str(root / "gone"))
         finally:
             bootstrap.find_comfy_installs = real_find
+            bootstrap.detect_comfy_dirs = real_detect
     return s

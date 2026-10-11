@@ -993,6 +993,7 @@ _ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 class ComfyProcess:
     def __init__(self) -> None:
         self.proc: subprocess.Popen | None = None
+        self.stopping = False
         self.lines: list[str] = []
         self._lock = threading.Lock()
 
@@ -1025,6 +1026,8 @@ class ComfyProcess:
         # the app (KJ's taeh3 override, latent2rgb without it) needs them
         cmd += ["--preview-method", "auto"]
         prog.log("Launching ComfyUI: " + " ".join(cmd))
+        self.note("Launching ComfyUI: " + " ".join(cmd))
+        self.stopping = False
         flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) \
             if platform.system() == "Windows" else 0
         # Output goes to a file, not a pipe. Closing the console on Windows
@@ -1071,6 +1074,10 @@ class ComfyProcess:
                     self._line(prog, raw.decode("utf-8", "replace").rstrip())
         if buf:
             self._line(prog, buf.decode("utf-8", "replace").rstrip())
+        if not self.stopping and proc is self.proc:
+            # a silent exit reads as "refuses to start"; say it stopped
+            self.note(f"The engine exited (code {proc.returncode}). The "
+                      "lines above say why.")
 
     def _line(self, prog: Progress, line: str) -> None:
         line = _ANSI.sub("", line)        # ComfyUI colours its log levels
@@ -1089,6 +1096,7 @@ class ComfyProcess:
 
     def stop(self) -> None:
         if self.alive():
+            self.stopping = True
             try:
                 self.proc.terminate()
                 self.proc.wait(timeout=15)

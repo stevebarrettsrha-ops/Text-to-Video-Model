@@ -351,6 +351,34 @@ def run(slow: bool = False) -> Suite:
     s.check("other events, and frames with no prompt to credit, are ignored",
             set(server.ws_preview) == {"pidA", "pidB"})
 
+    # -- taking over a foreign engine: stop it, never reboot it in place -------
+    # Manager's reboot brings back the same install with the same problems
+    # (or, for an orphan, nothing at all) — the "took the reboot" loop.
+    calls = []
+    state = {"up": True}
+    real = (server.requests.post, server.comfy_online, bootstrap.port_pids,
+            bootstrap.pid_cmdline, bootstrap.kill_pid, server.time.sleep)
+
+    def down(pid):
+        calls.append(("kill", pid))
+        state["up"] = False
+        return "stopped"
+    server.requests.post = lambda *a, **k: calls.append(("reboot",)) or None
+    server.comfy_online = lambda url: state["up"]
+    bootstrap.port_pids = lambda port: [4242] if state["up"] else []
+    bootstrap.pid_cmdline = lambda pid: "python D:/Other/ComfyUI/main.py"
+    bootstrap.kill_pid = down
+    server.time.sleep = lambda t: None
+    try:
+        how, advice = server.take_over_port("http://127.0.0.1:8188", 8188)
+        s.equal("a findable engine is stopped and freed", (how, advice),
+                ("freed", None))
+        s.equal("without asking Manager to reboot it", calls,
+                [("kill", 4242)])
+    finally:
+        (server.requests.post, server.comfy_online, bootstrap.port_pids,
+         bootstrap.pid_cmdline, bootstrap.kill_pid, server.time.sleep) = real
+
     # -- a render with no steps to count still says what it is doing -----------
     s.equal("each long silent stretch has a name",
             [server.stage_for(c) for c in

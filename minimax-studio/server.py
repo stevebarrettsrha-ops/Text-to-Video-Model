@@ -569,29 +569,45 @@ def _note(msg: str) -> None:
     progress.log(msg)
 
 
-def take_over_port(url: str, port: int):
-    """Close whatever ComfyUI answers on the port.
-
-    Returns ("manager-reboot", None) when ComfyUI-Manager rebooted it in
-    place, ("freed", None) when the port is now empty, or (None, advice)
-    when it cannot be done — with advice that names the actual obstacle,
-    because "close it yourself" against a windowless process is a treasure
-    hunt through Task Manager.
-    """
-    _note("This ComfyUI was not started here — taking it over.")
+def _manager_reboot(url: str) -> bool:
+    """Ask ComfyUI-Manager to reboot the engine; True if it went down."""
     try:
         r = requests.post(f"{url}/manager/reboot", json={}, timeout=5)
         accepted = r.status_code in (200, 201, 204)
     except requests.exceptions.RequestException:
         accepted = True          # the connection dropping is the reboot
-    if accepted:
-        deadline = time.time() + 10
-        while time.time() < deadline:
-            if not comfy_online(url):
-                _note("ComfyUI-Manager took the reboot; waiting for the "
-                      "engine to come back.")
-                return "manager-reboot", None
-            time.sleep(0.5)
+    if not accepted:
+        return False
+    deadline = time.time() + 10
+    while time.time() < deadline:
+        if not comfy_online(url):
+            return True
+        time.sleep(0.5)
+    return False
+
+
+def take_over_port(url: str, port: int):
+    """Close whatever ComfyUI answers on the port.
+
+    Returns ("freed", None) when the port is now empty,
+    ("manager-reboot", None) when ComfyUI-Manager rebooted it in place, or
+    (None, advice) when it cannot be done — with advice that names the
+    actual obstacle, because "close it yourself" against a windowless
+    process is a treasure hunt through Task Manager.
+
+    Stopping the process comes first. Manager's reboot restarts the SAME
+    install with the SAME command line — a different install, or one
+    launched without --lowvram, comes back exactly as useless, and an
+    orphan whose console is gone often does not come back at all. That is
+    how "taking it over / took the reboot" repeated forever with no engine.
+    The reboot is kept only for an engine whose process cannot be found.
+    """
+    _note("This ComfyUI was not started here — taking it over.")
+    if not bootstrap.port_pids(port):
+        if _manager_reboot(url):
+            _note("ComfyUI-Manager took the reboot; waiting for the "
+                  "engine to come back.")
+            return "manager-reboot", None
         _note("ComfyUI-Manager did not take the reboot; stopping the "
               "process instead.")
 
@@ -665,6 +681,34 @@ def take_over_port(url: str, port: int):
                   "ComfyUI.")
 
 
+def _follow_manager_reboot() -> None:
+    """A Manager reboot is only trusted once the engine is back. If it has
+    not returned in two minutes and the port is empty, start the managed
+    engine — never leave the app with no engine and no word why."""
+    url = cfg["comfy_url"]
+
+    def wait():
+        if bootstrap.wait_for_comfy(url, timeout=120):
+            try:
+                client.schema(force=True)
+            except Exception:
+                pass
+            return
+        py = bootstrap.comfy_python(cfg)
+        if comfy_proc.alive() or not (cfg.get("comfy_dir") and py):
+            return
+        if bootstrap.port_pids(comfy_port(url)):
+            _note("The rebooted engine has not answered in two minutes but "
+                  "still holds the port. Press Restart ComfyUI to replace it.")
+            return
+        _note("The rebooted engine never came back — starting a managed "
+              "one instead.")
+        comfy_proc.start(py, Path(cfg["comfy_dir"]), comfy_port(url),
+                         progress, cfg.get("lowvram", True))
+        _refresh_schema_when_up()
+    threading.Thread(target=wait, daemon=True).start()
+
+
 def _refresh_schema_when_up() -> None:
     """After a (re)start, drop the cached schema the moment the engine
     answers — otherwise the fresh model scan hides behind the old cache
@@ -685,6 +729,15 @@ def api_comfy_start():
     py = bootstrap.comfy_python(cfg)
     if not cfg.get("comfy_dir") or not py:
         return jsonify({"error": "Run setup first."}), 400
+    port = comfy_port(cfg["comfy_url"])
+    held = [] if comfy_proc.alive() else bootstrap.port_pids(port)
+    if held:
+        # a stuck or half-rebooted engine: a second one could not bind
+        msg = (f"Port {port} is held by pid {held[0]}, which does not answer "
+               "as ComfyUI — an engine that is stuck or still coming back. "
+               "Press Restart ComfyUI to replace it.")
+        _note(msg)
+        return jsonify({"error": msg}), 409
     comfy_proc.start(py, Path(cfg["comfy_dir"]),
                      comfy_port(cfg["comfy_url"]), progress,
                      cfg.get("lowvram", True))
@@ -719,7 +772,7 @@ def api_comfy_restart():
         _refresh_schema_when_up()
         return jsonify({"ok": True, "how": "managed"})
 
-    if not comfy_online(url):
+    if not comfy_online(url) and not bootstrap.port_pids(port):
         if not can_start:
             return jsonify({"error": "Run setup first."}), 400
         _note("Starting ComfyUI…")
@@ -728,12 +781,12 @@ def api_comfy_restart():
         _refresh_schema_when_up()
         return jsonify({"ok": True, "how": "started"})
 
-    # online, but not ours — take it over
+    # online but not ours, or silent while holding the port — take it over
     how, advice = take_over_port(url, port)
     if advice:
         return jsonify({"error": advice}), 409
     if how == "manager-reboot":
-        _refresh_schema_when_up()
+        _follow_manager_reboot()
         return jsonify({"ok": True, "how": "manager-reboot"})
     if not can_start:
         return jsonify({"ok": True, "how": "stopped",
@@ -1243,7 +1296,7 @@ def ensure_engine_at_boot() -> None:
         _note(advice)
         return
     if how == "manager-reboot":
-        _refresh_schema_when_up()
+        _follow_manager_reboot()
         return
     _note("Starting a managed engine in its place…")
     comfy_proc.start(py, Path(cfg["comfy_dir"]), port, progress,

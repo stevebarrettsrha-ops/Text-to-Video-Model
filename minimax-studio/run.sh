@@ -4,8 +4,11 @@ cd "$(dirname "$0")"
 # Started from the file manager (right-click -> Run as a Program) there is no
 # terminal: nothing this script says can be seen, and a failure just looks
 # like nothing happening. On a Linux desktop, open a terminal and run there.
+# A systemd service (it sets INVOCATION_ID), or anything run with
+# MINIMAX_STUDIO_NO_TERMINAL=1, stays where it was started.
 if [ "$(uname)" = "Linux" ] && [ -z "${MINIMAX_STUDIO_IN_TERMINAL:-}" ] \
-   && [ ! -t 0 ] && [ ! -t 1 ] && [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]; then
+   && [ ! -t 0 ] && [ ! -t 1 ] && [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ] \
+   && [ -z "${INVOCATION_ID:-}${MINIMAX_STUDIO_NO_TERMINAL:-}" ]; then
   export MINIMAX_STUDIO_IN_TERMINAL=1
   SELF="$(pwd)/$(basename "$0")"
   for term in gnome-terminal ptyxis kgx konsole xfce4-terminal mate-terminal \
@@ -58,5 +61,11 @@ fi
 PY=.venv/bin/python
 echo "  Using: $($PY -c 'import sys;print(sys.executable)')"
 "$PY" -m pip install --disable-pip-version-check --quiet -r requirements.txt
-# not exec: the trap above has to outlive the server to report its exit
-"$PY" server.py
+# The server takes this script's place (exec), so whatever stops the
+# script stops the server. Only in a window this script opened does
+# the shell stay, so the trap above can keep a failure on screen.
+if [ -n "${MINIMAX_STUDIO_IN_TERMINAL:-}" ]; then
+  "$PY" server.py
+else
+  exec "$PY" server.py
+fi

@@ -21,6 +21,8 @@ if [ "$(uname)" = "Linux" ] && [ -z "${MINIMAX_STUDIO_IN_TERMINAL:-}" ] \
       *) "$term" -e bash "$SELF" && exit 0 ;;
     esac
   done
+  # No window opened: this run carries on here, so it is not one.
+  unset MINIMAX_STUDIO_IN_TERMINAL
   # no terminal found: carry on without one, the page still opens
 fi
 # in a window we opened, keep it open on failure so the reason can be read

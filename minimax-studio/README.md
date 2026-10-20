@@ -47,6 +47,14 @@ Nothing here hides the numbers from you or pretends otherwise.
 
 **Windows** — `run.bat`  ·  **macOS / Linux** — `./run.sh` → <http://127.0.0.1:7804>
 
+On Linux, double-clicking `run.sh` in the file manager opens it in a text
+editor — that is the file manager's choice, not a fault. Right-click it and
+pick **Run as a Program** instead; it opens a terminal and runs there. If a
+terminal answers `Permission denied` (an unzip can drop the executable bit),
+run `bash run.sh`, or `chmod +x run.sh` once. On Debian and Ubuntu the first
+run also needs `sudo apt-get install -y python3-venv`; the script says so when
+it is missing, and picks up where it stopped once it is installed.
+
 First launch offers three routes (existing ComfyUI / fresh managed install /
 connect to one you run yourself), then installs the optional nodes, then
 downloads the weights with resume and live progress.

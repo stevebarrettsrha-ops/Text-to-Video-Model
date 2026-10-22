@@ -475,6 +475,103 @@ def run(slow: bool = False) -> Suite:
         finally:
             bootstrap.APP_DIR = real_app
 
+    # -- set up on Windows, opened on Linux (a drive shared by both) -------
+    # The Windows venv and portable interpreter are still on disk, so they
+    # "exist"; every run of them is [Errno 8] Exec format error and the
+    # engine never starts.
+    import platform as _platform
+    import subprocess as _subprocess
+    from unittest.mock import patch as _patch
+    with tempfile.TemporaryDirectory() as tmp, \
+            _patch.object(_platform, "system", return_value="Linux"):
+        app = Path(tmp) / "Text-to-Video-Model-main" / "minimax-studio"
+        comfy = app / "ComfyUI"
+        (comfy / "models").mkdir(parents=True)
+        (comfy / "main.py").write_text("")
+        win_py = app / "comfy-venv" / "Scripts" / "python.exe"
+        win_py.parent.mkdir(parents=True)
+        win_py.write_bytes(b"MZ\x90\x00" + b"\x00" * 60)
+        elf = app / "elf"
+        elf.write_bytes(b"\x7fELF\x02\x01")
+        s.check("a Windows .exe is foreign on Linux",
+                bootstrap.foreign_binary(win_py))
+        s.check("an ELF binary is native on Linux",
+                not bootstrap.foreign_binary(elf))
+        s.check("a script or unreadable file is never called foreign",
+                not bootstrap.foreign_binary(comfy / "main.py")
+                and not bootstrap.foreign_binary(app / "nope"))
+        with _patch.object(_platform, "system", return_value="Windows"):
+            s.check("an ELF binary is foreign on Windows",
+                    bootstrap.foreign_binary(elf))
+
+        cfg_w = dict(bootstrap.DEFAULT_CONFIG, comfy_dir=str(comfy),
+                     models_dir=str(comfy / "models"), python=str(win_py),
+                     comfy_url="http://127.0.0.1:9", setup_complete=True)
+        s.equal("comfy_python does not hand out the foreign interpreter",
+                bootstrap.comfy_python(cfg_w), "")
+        notes = bootstrap.heal_paths(cfg_w)
+        s.equal("a saved interpreter built for Windows is cleared on Linux",
+                cfg_w["python"], "")
+        s.check("and the reason is reported",
+                any("another operating system" in n for n in notes),
+                "; ".join(notes))
+        moved = dict(cfg_w, python="D:\\AI\\Text-to-Video-Model-main\\"
+                     "minimax-studio\\comfy-venv\\Scripts\\python.exe")
+        real_app = bootstrap.APP_DIR
+        bootstrap.APP_DIR = app
+        try:
+            bootstrap.heal_paths(moved)
+        finally:
+            bootstrap.APP_DIR = real_app
+        s.equal("a rebased path that lands on the Windows python is cleared",
+                moved["python"], "")
+        s.equal("the Windows venv is left alone; Linux gets its own beside it",
+                bootstrap.venv_python(comfy),
+                app / "comfy-venv-linux" / "bin" / "python")
+        rows = {d["id"]: d for d in manager.dependencies(cfg_w)}
+        s.check("PyTorch says the old venv is for another system, not Errno 8",
+                rows["torch"]["state"] == "missing"
+                and "another operating system" in rows["torch"]["detail"]
+                and rows["torch"]["action"] == "install",
+                rows["torch"]["detail"][:90])
+        (app / "comfy-venv" / "bin").mkdir()
+        (app / "comfy-venv" / "bin" / "python").write_bytes(b"\x7fELF")
+        s.equal("a comfy-venv that also has a native interpreter is used",
+                bootstrap.venv_python(comfy),
+                app / "comfy-venv" / "bin" / "python")
+
+        portable = Path(tmp) / "ComfyUI_windows_portable"
+        (portable / "ComfyUI").mkdir(parents=True)
+        (portable / "ComfyUI" / "main.py").write_text("")
+        (portable / "python_embeded").mkdir()
+        (portable / "python_embeded" / "python.exe").write_bytes(b"MZ\x90\x00")
+        s.equal("a portable build's Windows python is passed over on Linux",
+                bootstrap.portable_python(portable / "ComfyUI"), None)
+        cfg_p = dict(cfg_w, comfy_dir=str(portable / "ComfyUI"), python="")
+        rows = {d["id"]: d for d in manager.dependencies(cfg_p)}
+        s.check("and PyTorch names it instead of 'Install ComfyUI first'",
+                rows["torch"]["state"] == "missing"
+                and "python_embeded" in rows["torch"]["detail"],
+                rows["torch"]["detail"][:90])
+
+        # apt-get from a task with no terminal: sudo would wait for ever
+        task = manager.Task("t", "t")
+        no = _subprocess.CompletedProcess([], 1)
+        with _patch.object(_subprocess, "run", return_value=no), \
+                _patch.object(manager.shutil, "which",
+                              side_effect=lambda n: "/usr/bin/" + n), \
+                _patch.dict(os.environ, {"DISPLAY": ":0"}):
+            s.equal("sudo that needs a password becomes pkexec on a desktop",
+                    manager._elevate(["sudo", "apt-get", "install", "-y",
+                                      "git"], task),
+                    ["pkexec", "apt-get", "install", "-y", "git"])
+        with _patch.object(_subprocess, "run", return_value=no), \
+                _patch.dict(os.environ, {"DISPLAY": "", "WAYLAND_DISPLAY": ""}):
+            s.equal("and fails fast as sudo -n without one",
+                    manager._elevate(["sudo", "apt-get", "install", "-y",
+                                      "git"], task),
+                    ["sudo", "-n", "apt-get", "install", "-y", "git"])
+
     # -- the start-up search: finds ComfyUI anywhere, prefers the weights ----
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)

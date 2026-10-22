@@ -3,5 +3,7 @@ __pycache__/
 minimax-studio/data/
 minimax-studio/tests/.inline.js
 minimax-studio/.venv/
+minimax-studio/.venv-*/
 minimax-studio/ComfyUI/
 minimax-studio/comfy-venv/
+minimax-studio/comfy-venv-*/
